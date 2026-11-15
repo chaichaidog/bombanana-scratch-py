@@ -124,16 +124,16 @@
       <div class="pyref-shell">
         <div class="pyref-header">
           <div class="pyref-title">📖 Python ↔ Scratch 對照表</div>
-          <div class="pyref-sub">國二讀 Python 規則 · 國一拼 Scratch 積木</div>
+          <div class="pyref-sub">指揮官看 Python 規則 · 拆彈手拼 Scratch 積木（每關輪流）</div>
         </div>
         <div class="pyref-controls">
           <input type="text" class="pyref-search" placeholder="🔍 搜尋語法（如 while, elif, %, 清單...）" />
           <div class="pyref-tabs">
-            <button type="button" class="pyref-tab active" data-cat="all">全部</button>
-            <button type="button" class="pyref-tab" data-cat="control">條件</button>
-            <button type="button" class="pyref-tab" data-cat="loop">迴圈</button>
-            <button type="button" class="pyref-tab" data-cat="var">變數/清單</button>
-            <button type="button" class="pyref-tab" data-cat="math">運算/邏輯</button>
+            <button type="button" class="pyref-tab ${activeCategory === "all" ? "active" : ""}" data-cat="all">全部</button>
+            <button type="button" class="pyref-tab ${activeCategory === "control" ? "active" : ""}" data-cat="control">條件</button>
+            <button type="button" class="pyref-tab ${activeCategory === "loop" ? "active" : ""}" data-cat="loop">迴圈</button>
+            <button type="button" class="pyref-tab ${activeCategory === "var" ? "active" : ""}" data-cat="var">變數/清單</button>
+            <button type="button" class="pyref-tab ${activeCategory === "math" ? "active" : ""}" data-cat="math">運算/邏輯</button>
           </div>
         </div>
         <div class="pyref-list"></div>
@@ -168,11 +168,11 @@
             </div>
             <div class="pyref-grid">
               <div class="pyref-col">
-                <div class="pyref-col-lbl py-lbl">🐍 Python (國二)</div>
+                <div class="pyref-col-lbl py-lbl">🐍 Python (手冊規則)</div>
                 <pre class="pyref-code"><code>${escapeHtml(item.python)}</code></pre>
               </div>
               <div class="pyref-col">
-                <div class="pyref-col-lbl scr-lbl">🧩 Scratch (國一)</div>
+                <div class="pyref-col-lbl scr-lbl">🧩 Scratch 積木</div>
                 <div class="pyref-scratch">${item.scratchHtml}</div>
               </div>
             </div>

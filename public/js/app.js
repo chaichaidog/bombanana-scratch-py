@@ -1,5 +1,7 @@
 /**
- * app.js — BOMBANANA 程式拆彈實驗室主控制器 (國中生街機合作版)
+ * app.js — BOMBANANA 程式拆彈實驗室主控制器
+ * 流程：步驟1(輸入房號與暱稱) → 步驟2(進房看模式/隊友預覽) → 步驟3(統一職位輪流實戰)
+ * 老師控制台：統一開房、設定小隊名稱、遊戲模式與監控即時狀態
  */
 (function (global) {
   const BNN = (global.BNN = global.BNN || {});
@@ -13,76 +15,47 @@
     unlimited: { label: "🎓 課堂練習 (混搭4模組｜不限時)", durationSec: 420, unlimitedTime: true }
   };
 
-  const ROLES = [
-    {
-      id: "commander",
-      badge: "國二專用",
-      icon: "🕶️",
-      title: "Python 指揮官",
-      desc: "看不到炸彈！手握 Python 規格書、迷宮牆壁地圖、摩斯表與 PY↔Scratch 對照表，全場發問＋口頭指揮！"
-    },
-    {
-      id: "coop",
-      badge: "國一 2人共用1台",
-      icon: "🛠️",
-      title: "國一雙人共用機",
-      desc: "兩位國一坐同台電腦並肩作戰！每解完一個關卡自動提醒「偵察手 ⇄ 積木/特務手」交換滑鼠，誰都不會發呆！"
-    },
-    {
-      id: "observer",
-      badge: "國一並排｜角色A",
-      icon: "🔭",
-      title: "國一現場偵察員",
-      desc: "兩位國一各用一台並排坐時選這個！負責看炸彈特徵、控管程式安全插銷，並親手操作「大按鈕 / 迷宮 / 摩斯電台」！"
-    },
-    {
-      id: "coder",
-      badge: "國一並排｜角色B",
-      icon: "🧩",
-      title: "國一 Scratch 程式師",
-      desc: "兩位國一各用一台並排坐時選這個！專屬 Scratch 積木區＋PY對照表，小遊戲關卡時還有搭檔紀錄助手可以一起喊！"
-    },
-    {
-      id: "demo",
-      badge: "老師／單人體驗",
-      icon: "🎓",
-      title: "全視角示範模式",
-      desc: "一鍵切換「炸彈與動作小遊戲 / Scratch」與「國二專家手冊」，適合老師示範或自己試玩。"
-    }
-  ];
-
-  const RADIO_CALLOUTS = [
-    "🆘 救命！國二快救援！",
-    "🔋 請報電池數與指示燈！",
-    "🔓 保險解鎖！衝啊！",
-    "🔥 穩住不要慌！",
-    "😎 這題太簡單了吧！"
-  ];
-
   const state = {
-    roomCode: "BNN-101",
-    playerName: "香蕉特務",
-    teamName: "",
-    role: "coop",
-    selectedPreset: "mix",
-    selectedModuleIds: (BNN.PRESET_MODULES && BNN.PRESET_MODULES.mix.slice()) || ["logic_gate", "big_button", "wire_array", "laser_maze"],
-    safetyLockRequired: true,
+    view: "entry", // entry | room | teacher
     syncMode: "checking",
+    roomCode: "",
+    playerName: "",
+    entryError: "",
+    joining: false,
+
+    // Room & gameplay state
     roomState: null,
     mission: null,
     activeModuleIdx: 0,
-    demoTab: "bomb",
-    showPyRef: true,
-    rotationEnabled: true,
-    swapFlag: false,
+    soloView: "defuser", // defuser | manual (only when <= 1 player in room)
+    defuserRightTab: "scratch", // scratch | pyref
     savedAsts: {},
     lastExecLog: null,
     lastEventId: null,
-    lastRadioId: null,
     clockOffsetMs: 0,
     lastTickSec: null,
     leaderboard: [],
-    morseScratchpad: ""
+    swapBannerText: "",
+    swapBannerUntil: 0,
+
+    // Teacher form state
+    teacherForm: {
+      code: "TEAM-01",
+      teamName: "第 1 小隊",
+      preset: "mix",
+      selectedModuleIds: (BNN.PRESET_MODULES && BNN.PRESET_MODULES.mix.slice()) || [
+        "logic_gate",
+        "big_button",
+        "wire_array",
+        "laser_maze"
+      ],
+      rotateRoles: true,
+      teacherOnlyStart: false,
+      batchPrefix: "TEAM",
+      batchCount: 4
+    },
+    teacherRooms: [],
+    teacherNotice: ""
   };
 
   let syncClient = null;
@@ -92,6 +65,7 @@
   let pyRefCtrl = null;
   let renderedSignature = "";
   let timerInterval = null;
+  let teacherPollTimer = null;
   let timeoutSent = false;
 
   const root = document.getElementById("app");
@@ -137,14 +111,22 @@
     toast._t = setTimeout(() => toast.classList.remove("show"), 4000);
   }
 
-  function openHelpModal() {
-    const modal = document.getElementById("help-modal");
-    if (modal) modal.classList.add("open");
+  function openModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add("open");
   }
 
-  function closeHelpModal() {
-    const modal = document.getElementById("help-modal");
-    if (modal) modal.classList.remove("open");
+  function closeModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove("open");
+  }
+
+  function getMyTurnRole() {
+    const rs = state.roomState;
+    if (!rs) return "defuser";
+    const players = rs.players || [];
+    if (players.length <= 1) return state.soloView;
+    return rs.defuserClientId === syncClient.getClientId() ? "defuser" : "manual";
   }
 
   function buildMissionIfNeeded() {
@@ -160,7 +142,8 @@
       state.mission._modSig = modSig;
       state.savedAsts = {};
       state.lastExecLog = null;
-      state.activeModuleIdx = 0;
+      state.activeModuleIdx = Number(rs.activeModuleIndex || 0);
+      state.defuserRightTab = "scratch";
     }
   }
 
@@ -168,20 +151,41 @@
     if (!syncClient) return;
     const list = await syncClient.fetchLeaderboard();
     state.leaderboard = list || [];
-    if (!state.roomState || state.roomState.status === "lobby") {
-      const lbEl = document.getElementById("lobby-leaderboard-list");
-      if (lbEl) lbEl.innerHTML = renderLeaderboardRows();
+    const host = document.getElementById("modal-lb-body");
+    if (host) host.innerHTML = renderLeaderboardRows();
+  }
+
+  function renderLeaderboardRows() {
+    if (!state.leaderboard || state.leaderboard.length === 0) {
+      return `<div class="lb-empty">目前還沒有通關紀錄，快組隊成為第一支傳奇拆彈小隊！</div>`;
     }
+    return state.leaderboard
+      .slice(0, 12)
+      .map(
+        (entry, i) => `
+      <div class="lb-row">
+        <span class="lb-rank">${i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`}</span>
+        <span class="lb-team">${escapeHtml(entry.team)}</span>
+        <span class="lb-meta">${entry.moduleCount}關 · ${entry.strikes}失誤 · <b>${formatTime(entry.elapsedSec)}</b></span>
+      </div>
+    `
+      )
+      .join("");
   }
 
   function onRoomStateUpdate(nextState) {
+    if (state.view !== "room") return;
     const prevStatus = state.roomState ? state.roomState.status : null;
     state.roomState = nextState;
     if (nextState.serverNow) {
       state.clockOffsetMs = nextState.serverNow - Date.now();
     }
-    if (typeof nextState.activeModuleIndex === "number" && (state.role === "observer" || state.role === "coder")) {
-      state.activeModuleIdx = nextState.activeModuleIndex;
+    if (typeof nextState.activeModuleIndex === "number") {
+      if (state.activeModuleIdx !== nextState.activeModuleIndex) {
+        state.activeModuleIdx = nextState.activeModuleIndex;
+        state.lastExecLog = null;
+        state.defuserRightTab = "scratch";
+      }
     }
 
     if (nextState.lastEvent && nextState.lastEvent.id !== state.lastEventId) {
@@ -189,8 +193,16 @@
       const ev = nextState.lastEvent;
       if (ev.type === "defused") {
         if (BNN.Sound) BNN.Sound.defused();
-        state.swapFlag = !state.swapFlag;
+        if (ev.rotated) {
+          state.swapBannerText = ev.message;
+          state.swapBannerUntil = Date.now() + 4500;
+        }
         showToast("🎉 " + ev.message, "success");
+      } else if (ev.type === "rotate") {
+        if (BNN.Sound) BNN.Sound.click();
+        state.swapBannerText = ev.message;
+        state.swapBannerUntil = Date.now() + 4000;
+        showToast(ev.message, "info");
       } else if (ev.type === "strike") {
         if (BNN.Sound) BNN.Sound.strike();
         showToast("💥 " + ev.message, "danger");
@@ -205,11 +217,6 @@
         refreshLeaderboard();
       } else if (ev.type === "lost") {
         if (BNN.Sound) BNN.Sound.boom();
-      } else if (ev.type === "safety") {
-        showToast("🔐 " + ev.message, "info");
-      } else if (ev.type === "radio") {
-        if (BNN.Sound) BNN.Sound.radioPing();
-        showToast("📡 " + ev.message, "radio");
       }
     }
 
@@ -217,32 +224,16 @@
       timeoutSent = false;
       buildMissionIfNeeded();
     } else if (nextState.status === "lobby" && prevStatus !== "lobby") {
-      refreshLeaderboard();
+      state.swapBannerText = "";
+      state.swapBannerUntil = 0;
     }
 
     renderApp();
   }
 
-  function renderLeaderboardRows() {
-    if (!state.leaderboard || state.leaderboard.length === 0) {
-      return `<div class="lb-empty">目前還沒有通關紀錄，快成為第一支拆彈傳奇小隊！</div>`;
-    }
-    return state.leaderboard
-      .slice(0, 8)
-      .map(
-        (entry, i) => `
-      <div class="lb-row">
-        <span class="lb-rank">${i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`}</span>
-        <span class="lb-team">${escapeHtml(entry.team)}</span>
-        <span class="lb-meta">${entry.moduleCount}關 · ${entry.strikes}失誤 · <b>${formatTime(entry.elapsedSec)}</b></span>
-      </div>
-    `
-      )
-      .join("");
-  }
-
+  // ==================== 頂部極簡導覽列 ====================
   function renderTopBar() {
-    const rs = state.roomState;
+    const rs = state.view === "room" ? state.roomState : null;
     const isPlaying = rs && rs.status === "playing";
     const isMuted = BNN.Sound && BNN.Sound.isMuted();
     const rem = getComputedRemainingSec();
@@ -251,31 +242,41 @@
     const totalCount = state.mission ? state.mission.modules.length : 0;
     const strikes = rs ? rs.strikes : 0;
     const maxStrikes = rs ? rs.maxStrikes : 3;
-    const roleObj = ROLES.find((r) => r.id === state.role) || ROLES[1];
+    const myRole = isPlaying ? getMyTurnRole() : null;
 
     return `
       <header class="topbar">
         <div class="brand">
           <span class="brand-logo">🍌💣</span>
           <div>
-            <div class="brand-title">BOMBANANA 程式拆彈實驗室</div>
-            <div class="brand-sub">Scratch × Python × 動作派對合作挑戰</div>
+            <div class="brand-title">BOMBANANA 拆彈實驗室</div>
+            <div class="brand-sub">
+              ${
+                rs && rs.teamName
+                  ? `${escapeHtml(rs.teamName)} · 房號 ${escapeHtml(rs.code)}`
+                  : state.view === "teacher"
+                  ? "👩‍🏫 老師統一開房與模式管理"
+                  : "Scratch × Python 合作拆彈"
+              }
+            </div>
           </div>
         </div>
 
         ${
-          rs && rs.status !== "lobby"
+          isPlaying
             ? `
           <div class="hud-strip">
-            <div class="hud-pill role-pill">${roleObj.icon} ${escapeHtml(roleObj.title)}</div>
+            <div class="hud-pill role-badge-pill ${myRole === "defuser" ? "is-defuser" : "is-manual"}">
+              ${myRole === "defuser" ? "💣 本關職位：拆彈手" : "📖 本關職位：指揮官"}
+            </div>
             <div class="hud-pill led-clock ${urgent ? "urgent" : ""}" id="hud-timer">
               ${rs.unlimitedTime ? "⏱ " : ""}${formatTime(rem)}
             </div>
             <div class="hud-pill strikes-pill" id="hud-strikes">
-              ${Array.from({ length: maxStrikes }, (_, i) => (i < strikes ? '<span class="strike-x hit">✖</span>' : '<span class="strike-x">○</span>')).join("")}
+              ${Array.from({ length: maxStrikes }, (_, i) => (i < strikes ? '<span class="strike-x hit">✖</span>' : '<span class="strike-x">❤️</span>')).join("")}
             </div>
             <div class="hud-pill progress-pill" id="hud-progress">
-              ✅ ${solvedCount}/${totalCount} 解除
+              🚩 ${solvedCount}/${totalCount} 關
             </div>
           </div>
         `
@@ -284,181 +285,310 @@
 
         <div class="top-actions">
           <span class="sync-badge ${state.syncMode}">
-            ${state.syncMode === "server" ? "🟢 雲端即時連線" : "🟡 單機／種子模式"}
+            ${state.syncMode === "server" ? "🟢 連線中" : "🟡 本機模式"}
           </span>
-          <button type="button" class="btn-top" id="btn-toggle-pyref">
-            📖 PY對照表 ${state.showPyRef ? "開" : "關"}
-          </button>
-          <button type="button" class="btn-top" id="btn-help">❓ 怎麼玩</button>
-          <button type="button" class="btn-top" id="btn-mute">${isMuted ? "🔇 靜音" : "🔊 音效"}</button>
-          ${rs && rs.status !== "lobby" ? `<button type="button" class="btn-top warn" id="btn-back-lobby">🏠 回大廳</button>` : ""}
+          <button type="button" class="btn-top" id="btn-open-lb">🏆 排行</button>
+          <button type="button" class="btn-top" id="btn-help">❓ 規則</button>
+          <button type="button" class="btn-top" id="btn-mute">${isMuted ? "🔇" : "🔊"}</button>
+          ${rs ? `<button type="button" class="btn-top warn" id="btn-leave-room">🚪 離開房間</button>` : ""}
         </div>
       </header>
     `;
   }
 
-  function renderLobby() {
-    const rs = state.roomState || {};
-    const players = rs.players || [];
-    const presetCfg = PRESETS[state.selectedPreset] || PRESETS.mix;
+  // ==================== 步驟 1：極簡輸入房號 + 暱稱 ====================
+  function renderEntryView() {
+    return `
+      <div class="entry-shell">
+        <form class="entry-card" id="entry-form">
+          <div class="entry-tag">👋 歡迎來到拆彈小隊</div>
+          <h1>先輸入房號與暱稱</h1>
+          <p class="entry-sub">由老師統一建立房間與小隊模式，輸入老師給的房號就能進入下一步！</p>
+
+          <div class="entry-field">
+            <label for="inp-room-code">🔑 房間代碼（例：TEAM-01）</label>
+            <input type="text" id="inp-room-code" value="${escapeHtml(state.roomCode)}" placeholder="請輸入老師給的房號" maxlength="20" autocomplete="off" />
+          </div>
+
+          <div class="entry-field">
+            <label for="inp-player-name">😎 你的暱稱</label>
+            <input type="text" id="inp-player-name" value="${escapeHtml(state.playerName)}" placeholder="請輸入你的名字或代號" maxlength="16" autocomplete="off" />
+          </div>
+
+          ${state.entryError ? `<div class="entry-error">⚠️ ${escapeHtml(state.entryError)}</div>` : ""}
+
+          <button type="submit" class="btn-primary-xl" id="btn-enter-room" ${state.joining ? "disabled" : ""}>
+            ${state.joining ? "正在連線進房..." : "下一步：進入房間 →"}
+          </button>
+
+          <div class="entry-divider"><span>或</span></div>
+
+          <button type="button" class="btn-teacher-entry" id="btn-goto-teacher">
+            👩‍🏫 我是老師：前往統一開房＆設定小隊模式
+          </button>
+        </form>
+      </div>
+    `;
+  }
+
+  // ==================== 老師控制台：統一開房、隊名、模式與監控 ====================
+  function renderTeacherView() {
+    const tf = state.teacherForm;
     const modMeta = BNN.MODULE_META || [];
+    const presetCfg = PRESETS[tf.preset] || PRESETS.mix;
 
     return `
-      <div class="lobby-wrap">
-        <section class="lobby-hero">
-          <div class="hero-left">
-            <div class="hero-tag">🎮 國二 Python × 國一 Scratch × 派對動作小遊戲</div>
-            <h1>3 人特務小隊集結！<br>講得清楚、寫得正確、手腳夠快才能活下來！</h1>
-            <p>
-              沒有盲人與聾人限制！<strong>🕶️ 國二指揮官</strong>看著手冊裡的 Python 規則、迷宮地圖與摩斯密碼表；
-              坐在另一側的<strong>兩位國一搭檔</strong>並肩分工，一邊操作 <b>Scratch 積木</b>（旁邊就有 <b>PY 對照表</b>），
-              一邊挑戰 <b>按住讀秒大按鈕、盲眼雷射迷宮、摩斯調頻電台</b>！
-            </p>
-            <div class="hero-badges">
-              <span>🧩 6 種程式拆彈</span>
-              <span>🕹️ 3 種爆笑小遊戲</span>
-              <span>📖 互動式 PY↔Scratch 對照表</span>
-              <span>📡 無線電快捷喊話</span>
-            </div>
+      <div class="teacher-shell">
+        <div class="teacher-topbar">
+          <div>
+            <h2>👩‍🏫 老師統一開房控制台</h2>
+            <p>先在這裡建立房間並指定「小隊名稱」與「遊戲模式」，學生只要輸入房號＋暱稱即可加入。</p>
           </div>
+          <button type="button" class="btn-secondary big" id="btn-teacher-back">← 回到學生輸入房號頁</button>
+        </div>
 
-          <div class="hero-room-box">
-            <div class="room-box-title">🔑 小隊報到處</div>
-            <div class="form-row">
-              <label>房間代碼（同隊輸入一樣的代碼就能連線！）</label>
-              <div class="input-with-btn">
-                <input type="text" id="inp-room-code" value="${escapeHtml(state.roomCode)}" maxlength="20" />
-                <button type="button" class="btn-secondary" id="btn-rand-code">🎲 換房號</button>
-              </div>
-            </div>
+        ${state.teacherNotice ? `<div class="teacher-notice">${escapeHtml(state.teacherNotice)}</div>` : ""}
+
+        <div class="teacher-grid">
+          <div class="t-card">
+            <h3>➕ 建立或更新單一房間</h3>
             <div class="form-grid-2">
               <div class="form-row">
-                <label>你的特務代號</label>
-                <input type="text" id="inp-player-name" value="${escapeHtml(state.playerName)}" maxlength="16" />
+                <label>🔑 房號</label>
+                <div class="input-with-btn">
+                  <input type="text" id="t-room-code" value="${escapeHtml(tf.code)}" maxlength="20" />
+                  <button type="button" class="btn-secondary" id="btn-t-rand">🎲</button>
+                </div>
               </div>
               <div class="form-row">
-                <label>小隊名稱（上榜用，選填）</label>
-                <input type="text" id="inp-team-name" value="${escapeHtml(state.teamName)}" placeholder="例：八年一班最強隊" maxlength="24" />
+                <label>🏷️ 小隊名稱</label>
+                <input type="text" id="t-team-name" value="${escapeHtml(tf.teamName)}" placeholder="例：第 1 小隊" maxlength="24" />
               </div>
             </div>
-            <div class="online-list">
-              <span>已進房隊友 (${players.length})：</span>
-              ${
-                players.length === 0
-                  ? "<small>等待隊友...</small>"
-                  : players
-                      .map((p) => {
-                        const r = ROLES.find((x) => x.id === p.role);
-                        return `<span class="player-chip">${r ? r.icon : "👤"} ${escapeHtml(p.name)} (${r ? r.title : p.role})</span>`;
-                      })
-                      .join("")
-              }
-            </div>
-          </div>
-        </section>
 
-        <section class="lobby-roles">
-          <h2>👥 選擇你的特務職位（依教室座位挑選）</h2>
-          <div class="role-cards">
-            ${ROLES.map(
-              (r) => `
-              <button type="button" class="role-card ${state.role === r.id ? "selected" : ""}" data-select-role="${r.id}">
-                <div class="role-card-top">
-                  <span class="role-icon">${r.icon}</span>
-                  <span class="role-badge">${r.badge}</span>
-                </div>
-                <h3>${r.title}</h3>
-                <p>${r.desc}</p>
-              </button>
-            `
-            ).join("")}
-          </div>
-        </section>
-
-        <section class="lobby-config">
-          <div class="cfg-col">
-            <h3>🎮 選擇遊戲模式 & 自由搭配關卡</h3>
+            <div class="t-section-lbl">🎮 選擇此小隊遊戲模式（已選 ${tf.selectedModuleIds.length} 關 · ${presetCfg.unlimitedTime ? "不限時" : Math.round(presetCfg.durationSec / 60) + " 分鐘"}）</div>
             <div class="preset-pills">
               ${Object.entries(PRESETS)
                 .map(
                   ([key, info]) => `
-                <button type="button" class="preset-btn ${state.selectedPreset === key ? "active" : ""}" data-preset="${key}">${info.label}</button>
+                <button type="button" class="preset-btn ${tf.preset === key ? "active" : ""}" data-t-preset="${key}">${info.label}</button>
               `
                 )
                 .join("")}
             </div>
 
-            <div class="module-picker-title">✨ 已勾選本局模組（${state.selectedModuleIds.length} 個，點擊可自由增減）：</div>
-            <div class="module-picker-grid">
-              ${modMeta
-                .map((m) => {
-                  const picked = state.selectedModuleIds.includes(m.id);
-                  return `
-                  <button type="button" class="mod-pick-chip ${picked ? "picked" : ""} ${m.kind === "minigame" ? "is-mini" : ""}" data-pick-mod="${m.id}">
-                    <span class="pick-dot">${picked ? "☑" : "☐"}</span>
-                    <span>${escapeHtml(m.title)}</span>
-                    <small>${escapeHtml(m.tag)}</small>
-                  </button>
-                `;
-                })
-                .join("")}
-            </div>
-
-            <label class="chk-line">
-              <input type="checkbox" id="chk-safety-lock" ${state.safetyLockRequired ? "checked" : ""} />
-              <span><strong>國一雙機「安全插銷鎖」</strong>（偵察員與程式師分兩台時，程式模組須由偵察員按解鎖後才能執行）</span>
-            </label>
-          </div>
-
-          <div class="cfg-right">
-            <div class="cfg-start">
-              <div class="start-summary">
-                <div>房號：<b>${escapeHtml(state.roomCode)}</b></div>
-                <div>關卡數：<b>${state.selectedModuleIds.length} 個</b></div>
+            <details class="t-details">
+              <summary>🔧 微調本局關卡組合（目前 ${tf.selectedModuleIds.length} 個）</summary>
+              <div class="module-picker-grid">
+                ${modMeta
+                  .map((m) => {
+                    const picked = tf.selectedModuleIds.includes(m.id);
+                    return `
+                    <button type="button" class="mod-pick-chip ${picked ? "picked" : ""} ${m.kind === "minigame" ? "is-mini" : ""}" data-t-mod="${m.id}">
+                      <span>${picked ? "☑" : "☐"} ${escapeHtml(m.title)}</span>
+                      <small>${escapeHtml(m.tag)}</small>
+                    </button>
+                  `;
+                  })
+                  .join("")}
               </div>
-              <div class="start-preset-name">${presetCfg.label}</div>
-              <button type="button" class="btn-start-game" id="btn-start-game" ${state.selectedModuleIds.length === 0 ? "disabled" : ""}>🚀 全員就位，開始拆彈！</button>
-              <small class="start-note">任一隊友按下開始後，同房所有裝置將同步進入任務</small>
+            </details>
+
+            <div class="t-checks">
+              <label class="chk-line">
+                <input type="checkbox" id="chk-t-rotate" ${tf.rotateRoles ? "checked" : ""} />
+                <span><strong>🔄 每過一關自動輪流職位</strong>（全體隊員統一輪替「拆彈手 ⇄ 指揮官」）</span>
+              </label>
+              <label class="chk-line">
+                <input type="checkbox" id="chk-t-teacher-only" ${tf.teacherOnlyStart ? "checked" : ""} />
+                <span><strong>🔒 僅限老師按開始</strong>（打勾後須由老師在右側房間列表按「🚀 開始」，適合全班計時競賽）</span>
+              </label>
             </div>
 
-            <div class="leaderboard-box">
-              <div class="lb-head">🏆 實驗室拆彈英雄榜</div>
-              <div class="lb-list" id="lobby-leaderboard-list">${renderLeaderboardRows()}</div>
+            <button type="button" class="btn-primary-xl" id="btn-t-save">✅ 建立／發布此房間</button>
+
+            <div class="t-batch-box">
+              <div class="t-batch-title">⚡ 班級多組快速開房（套用上方模式）</div>
+              <div class="t-batch-row">
+                <label>前綴 <input type="text" id="t-batch-prefix" value="${escapeHtml(tf.batchPrefix)}" maxlength="10" /></label>
+                <label>隊數
+                  <select id="t-batch-count">
+                    ${[2, 3, 4, 6, 8, 10].map((n) => `<option value="${n}" ${tf.batchCount === n ? "selected" : ""}>${n} 隊</option>`).join("")}
+                  </select>
+                </label>
+                <button type="button" class="btn-secondary" id="btn-t-batch">一鍵建立</button>
+              </div>
             </div>
           </div>
-        </section>
-      </div>
-    `;
-  }
 
-  function renderEndScreen() {
-    const rs = state.roomState;
-    const isWon = rs.status === "won";
-    const rem = getComputedRemainingSec();
-
-    return `
-      <div class="end-screen ${isWon ? "won" : "lost"}">
-        <div class="end-card">
-          <div class="end-emoji">${isWon ? "🎉🍌🏆" : "💥🍌💀"}</div>
-          <h1>${isWon ? "完美拆彈！實驗室得救了！" : "轟隆！變成滿地香蕉泥了！"}</h1>
-          <p class="end-reason">${escapeHtml(rs.endReason || "")}</p>
-          <div class="end-stats">
-            <div class="stat-box"><span>任務代碼</span><strong>${escapeHtml(rs.seed || rs.code)}</strong></div>
-            <div class="stat-box"><span>${rs.unlimitedTime ? "完成耗時" : "剩餘時間"}</span><strong>${formatTime(rem)}</strong></div>
-            <div class="stat-box"><span>完成模組</span><strong>${(rs.solvedModules || []).length} / ${state.mission ? state.mission.modules.length : 0}</strong></div>
-            <div class="stat-box"><span>累積失誤</span><strong>${rs.strikes} / ${rs.maxStrikes}</strong></div>
-          </div>
-          <div class="end-actions">
-            <button type="button" class="btn-start-game" id="btn-play-again">🔄 換新題目再挑戰一局</button>
-            <button type="button" class="btn-secondary big" id="btn-end-lobby">🏠 回大廳換模式／角色</button>
+          <div class="t-card">
+            <div class="t-list-head">
+              <h3>📋 教室已開房間總覽</h3>
+              <button type="button" class="btn-mini" id="btn-t-refresh">🔄 立即刷新</button>
+            </div>
+            <div class="t-rooms-list" id="teacher-rooms-list">
+              ${renderTeacherRoomsHtml()}
+            </div>
           </div>
         </div>
       </div>
     `;
   }
 
+  function renderTeacherRoomsHtml() {
+    if (!state.teacherRooms || state.teacherRooms.length === 0) {
+      return `<div class="t-empty">目前尚未建立任何房間，請在左側填寫房號、小隊名稱與模式後點擊「建立／發布此房間」。</div>`;
+    }
+    return state.teacherRooms
+      .map((rm) => {
+        const players = rm.players || [];
+        const total = (rm.selectedModuleIds || []).length || 4;
+        const solved = (rm.solvedModules || []).length;
+        const pInfo = PRESETS[rm.preset];
+        const statusMap = {
+          lobby: { text: "⏳ 等待進房中", cls: "st-lobby" },
+          playing: { text: `🔥 拆彈中 (${solved}/${total})`, cls: "st-playing" },
+          won: { text: "🎉 已通關！", cls: "st-won" },
+          lost: { text: "💥 已引爆", cls: "st-lost" }
+        };
+        const st = statusMap[rm.status] || statusMap.lobby;
+        return `
+          <div class="t-room-item">
+            <div class="t-room-top">
+              <div>
+                <span class="t-room-code">${escapeHtml(rm.code)}</span>
+                <strong class="t-room-team">${escapeHtml(rm.teamName || "未命名小隊")}</strong>
+              </div>
+              <span class="t-room-st ${st.cls}">${st.text}</span>
+            </div>
+            <div class="t-room-meta">
+              模式：${escapeHtml(pInfo ? pInfo.label : rm.preset)} · ${rm.rotateRoles ? "🔄 自動輪流" : "固定順序"}
+            </div>
+            <div class="t-room-players">
+              隊員 (${players.length})：
+              ${
+                players.length === 0
+                  ? "<small>尚無學生進房</small>"
+                  : players.map((p) => `<span class="player-chip">${escapeHtml(p.name)}${rm.status === "lobby" && p.ready ? " ✅" : ""}</span>`).join("")
+              }
+            </div>
+            <div class="t-room-actions">
+              <button type="button" class="btn-mini" data-t-copy="${escapeHtml(rm.code)}">📋 複製房號</button>
+              <button type="button" class="btn-mini" data-t-edit="${escapeHtml(rm.code)}">✏️ 修改設定</button>
+              ${
+                rm.status === "lobby"
+                  ? `<button type="button" class="btn-mini primary" data-t-start="${escapeHtml(rm.code)}">🚀 開始這房</button>`
+                  : `<button type="button" class="btn-mini" data-t-reset="${escapeHtml(rm.code)}">🔄 重回大廳</button>`
+              }
+              <button type="button" class="btn-mini danger" data-t-del="${escapeHtml(rm.code)}">🗑️ 刪除</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  // ==================== 步驟 2：已進房等待室 ====================
+  function renderRoomLobbyView() {
+    const rs = state.roomState;
+    if (!rs || rs.status === "closed") {
+      return `
+        <div class="entry-shell">
+          <div class="entry-card">
+            <h2>🚪 房間已關閉</h2>
+            <p class="entry-sub">老師已關閉或刪除此房間，請返回首頁重新輸入房號。</p>
+            <button type="button" class="btn-primary-xl" id="btn-closed-back">← 返回輸入房號</button>
+          </div>
+        </div>
+      `;
+    }
+
+    const players = rs.players || [];
+    const me = players.find((p) => p.clientId === syncClient.getClientId());
+    const presetCfg = PRESETS[rs.preset] || PRESETS.mix;
+    const modMeta = BNN.MODULE_META || [];
+    const mods = (rs.selectedModuleIds || []).map((id) => modMeta.find((m) => m.id === id) || { id, title: id });
+
+    return `
+      <div class="room-lobby-shell">
+        <div class="step-pill-bar">步驟 2 / 2 · 已進入房間，確認團隊與關卡後按下開始！</div>
+
+        <div class="mission-banner-card">
+          <div class="mb-top">
+            <div>
+              <div class="mb-kicker">🏷️ 老師指定小隊</div>
+              <h1>${escapeHtml(rs.teamName || rs.code)}</h1>
+            </div>
+            <div class="mb-code-box">
+              <span>房號</span>
+              <strong>${escapeHtml(rs.code)}</strong>
+            </div>
+          </div>
+
+          <div class="mb-specs">
+            <span class="spec-chip">🎮 ${escapeHtml(presetCfg.label)}</span>
+            <span class="spec-chip">🚩 共 ${mods.length} 關</span>
+            <span class="spec-chip">${rs.rotateRoles ? "🔄 每過 1 關自動輪流「拆彈手 ⇄ 指揮官」" : "👥 固定分工進行"}</span>
+          </div>
+
+          <div class="mb-mod-trail">
+            ${mods.map((m, i) => `<span class="trail-pill">${i + 1}. ${escapeHtml(m.title)}</span>`).join("")}
+          </div>
+        </div>
+
+        <div class="roster-card">
+          <div class="roster-head">
+            <h3>👥 小隊報到名單（${players.length} 人）</h3>
+            <span class="roster-hint">不分年級與固定身分，人人輪流擔任「💣 拆彈手」與「📖 指揮官」！</span>
+          </div>
+
+          <div class="roster-list">
+            ${players
+              .map((p, idx) => {
+                const isMe = p.clientId === syncClient.getClientId();
+                const firstRoleText = idx === 0 ? "第 1 關先當 💣 拆彈手" : "第 1 關先當 📖 指揮官";
+                return `
+                  <div class="roster-player ${isMe ? "is-me" : ""}">
+                    <div class="rp-left">
+                      <span class="rp-avatar">${idx === 0 ? "💣" : "📖"}</span>
+                      <div>
+                        <div class="rp-name">${escapeHtml(p.name)} ${isMe ? '<span class="me-tag">你</span>' : ""}</div>
+                        <div class="rp-role-note">${players.length <= 1 ? "單人練習可自由切換視角" : firstRoleText}</div>
+                      </div>
+                    </div>
+                    <span class="rp-ready ${p.ready ? "yes" : "no"}">${p.ready ? "✅ 已就位" : "⏳ 準備中"}</span>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+
+          ${
+            players.length < 2
+              ? `<div class="solo-tip">💡 目前房間內只有你 1 人：請隊友也輸入房號 <b>${escapeHtml(rs.code)}</b> 與暱稱進來，就能兩人輪流配合拆彈！（也可以直接按開始先測試）</div>`
+              : ""
+          }
+        </div>
+
+        <div class="lobby-actions-bar">
+          <button type="button" class="btn-secondary big" id="btn-lobby-back">← 換房號 / 換暱稱</button>
+          <button type="button" class="btn-secondary big ${me && me.ready ? "ready-on" : ""}" id="btn-toggle-ready">
+            ${me && me.ready ? "✅ 已準備（點此取消）" : "🙋 我準備好了"}
+          </button>
+          ${
+            rs.teacherOnlyStart
+              ? `<button type="button" class="btn-primary-xl" disabled>⏳ 此房設定由老師統一按下開始...</button>`
+              : `<button type="button" class="btn-primary-xl" id="btn-start-mission">🚀 下一步：開始拆彈！</button>`
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  // ==================== 步驟 3：超清爽不混亂的遊戲畫面 ====================
   function renderGameLayout() {
     const rs = state.roomState;
+    buildMissionIfNeeded();
     const mission = state.mission;
     const modules = mission.modules || [];
     if (state.activeModuleIdx >= modules.length) state.activeModuleIdx = 0;
@@ -467,169 +597,143 @@
     const isModSolved = activeMod && solvedSet.has(activeMod.id);
     const isMiniGame = activeMod && activeMod.kind === "minigame";
 
-    const role = state.role;
-    const showDemoTabs = role === "demo";
-    const showBomb = role === "coop" || role === "observer" || (role === "demo" && state.demoTab === "bomb");
-    // Only show Scratch workspace when current module is a Scratch coding module!
-    const showScratchArea = (role === "coop" && !isMiniGame) || role === "coder" || (role === "demo" && state.demoTab === "bomb" && !isMiniGame);
-    const showManual = role === "commander" || (role === "demo" && state.demoTab === "manual");
+    const players = rs.players || [];
+    const isSolo = players.length <= 1;
+    const myRole = getMyTurnRole();
+    const defuserPlayer = players.find((p) => p.clientId === rs.defuserClientId) || players[0];
+    const commanderNames = players
+      .filter((p) => p.clientId !== (defuserPlayer && defuserPlayer.clientId))
+      .map((p) => p.name);
 
-    const needsSafetyUnlock =
-      role === "coder" &&
-      !isMiniGame &&
-      rs.safetyLockRequired &&
-      activeMod &&
-      rs.safetyUnlockedFor !== activeMod.id;
+    const showSwapBanner = state.swapBannerText && Date.now() < state.swapBannerUntil;
 
-    const coopPartnerBanner =
-      role === "coop" && state.rotationEnabled
-        ? `
-      <div class="coop-turn-banner">
-        <span>🤝 <b>國一雙人共用分工：</b>
-          目前由 <strong>${state.swapFlag ? "夥伴 B" : "夥伴 A"}</strong> 主控操作（${isMiniGame ? "🕹️ 動作小遊戲" : "🧩 拉 Scratch 積木"}），
-          <strong>${state.swapFlag ? "夥伴 A" : "夥伴 B"}</strong> 負責「🔭 報炸彈特徵、盯閃燈、核對 PY 表」！
-        </span>
-        <button type="button" class="btn-mini" id="btn-manual-swap">🔄 立即換手</button>
-      </div>
-    `
-        : "";
-
-    const demoSwitcher = showDemoTabs
-      ? `
-      <div class="demo-tabs">
-        <button type="button" class="demo-tab ${state.demoTab === "bomb" ? "active" : ""}" data-demo-tab="bomb">💣 國一現場：炸彈 ＋ Scratch ＋ 小遊戲</button>
-        <button type="button" class="demo-tab ${state.demoTab === "manual" ? "active" : ""}" data-demo-tab="manual">🕶️ 國二指揮官：Python ＋ 小遊戲手冊</button>
-      </div>
-    `
-      : "";
-
-    const radioBar = `
-      <div class="radio-bar">
-        <span class="radio-title">📡 無線電喊話：</span>
-        <div class="radio-btns">
-          ${RADIO_CALLOUTS.map((txt) => `<button type="button" class="radio-chip" data-radio-txt="${escapeHtml(txt)}">${escapeHtml(txt)}</button>`).join("")}
+    const ribbonHtml = `
+      <div class="mission-ribbon">
+        <div class="ribbon-steps">
+          ${modules
+            .map((m, idx) => {
+              const solved = solvedSet.has(m.id);
+              const current = idx === state.activeModuleIdx;
+              const shortName = m.title.replace(/^[^\s]+\s/, "");
+              return `
+                <button type="button" class="step-chip ${current ? "active" : ""} ${solved ? "solved" : ""}" data-step-mod="${idx}">
+                  <span>${solved ? "✅" : idx + 1}</span>
+                  <span>${escapeHtml(shortName)}</span>
+                </button>
+              `;
+            })
+            .join("")}
         </div>
-        <div class="radio-latest" id="radio-latest">
+
+        <div class="ribbon-turn">
           ${
-            rs.radioFeed && rs.radioFeed.length > 0
-              ? `<span>最新：<b>${escapeHtml(rs.radioFeed[rs.radioFeed.length - 1].senderName)}</b>「${escapeHtml(rs.radioFeed[rs.radioFeed.length - 1].text)}」</span>`
-              : "<small>點擊左方按鈕快速發送團隊暗號</small>"
+            isSolo
+              ? `
+            <div class="solo-switch">
+              <span>單人切換視角：</span>
+              <button type="button" class="solo-tab ${state.soloView === "defuser" ? "active" : ""}" data-solo-view="defuser">💣 拆彈手</button>
+              <button type="button" class="solo-tab ${state.soloView === "manual" ? "active" : ""}" data-solo-view="manual">📖 指揮官</button>
+            </div>
+          `
+              : `
+            <span class="turn-summary">
+              💣 拆彈手：<b>${escapeHtml(defuserPlayer ? defuserPlayer.name : "?")}</b>
+              · 📖 指揮官：<b>${escapeHtml(commanderNames.join("、") || "?")}</b>
+            </span>
+            <button type="button" class="btn-mini" id="btn-manual-rotate">🔄 換手輪流</button>
+          `
           }
         </div>
       </div>
     `;
 
-    let scratchOrCompanionHtml = "";
-    if (showScratchArea) {
-      if (isMiniGame && role === "coder") {
-        // Coder looking at a non-programming mini-game tab gets a super helpful companion helper!
-        scratchOrCompanionHtml = `
-          <section class="panel-scratch companion-mode">
-            <div class="scratch-mod-bar">
-              <div>
-                <span class="scratch-mod-badge">🕹️ 非程式小遊戲</span>
-                <strong>${escapeHtml(activeMod.title)}</strong>
-                <div class="scratch-goal-txt">這關不用寫程式！快幫旁邊的「國一偵察員」一起破關！</div>
-              </div>
-              <div class="coder-mod-tabs">
-                ${modules
-                  .map((m, i) => `<button type="button" class="coder-mod-pill ${i === state.activeModuleIdx ? "active" : ""} ${solvedSet.has(m.id) ? "solved" : ""}" data-coder-mod="${i}">${solvedSet.has(m.id) ? "✅" : m.kind === "minigame" ? `🕹️${i + 1}` : `🧩${i + 1}`}</button>`)
-                  .join("")}
-              </div>
+    const swapBannerHtml = showSwapBanner
+      ? `<div class="swap-callout-banner"><span>${escapeHtml(state.swapBannerText)}</span></div>`
+      : "";
+
+    let mainWorkspaceHtml = "";
+
+    if (myRole === "defuser") {
+      if (isMiniGame) {
+        // 動作小遊戲：置中大舞台，零多餘面板干擾！
+        mainWorkspaceHtml = `
+          <div class="stage-centered">
+            <div class="role-focus-tip defuser">
+              <strong>💣 你是本關【拆彈手】</strong> — 大聲把畫面條件唸給指揮官，照他的指示操作小遊戲！
             </div>
-            <div class="companion-card">
-              <h3>🤝 並排搭檔助攻指南</h3>
-              ${
-                activeMod.id === "morse_radio"
-                  ? `
-                <p>盯著偵察員螢幕的閃燈，在這裡點按鈕幫大家記下摩斯電碼再唸給國二！</p>
-                <div class="morse-pad-box">
-                  <div class="morse-pad-display" id="coder-morse-pad">${escapeHtml(state.morseScratchpad || "尚未紀錄...")}</div>
-                  <div class="morse-pad-btns">
-                    <button type="button" class="mf-btn" data-pad-add="●">● 短點</button>
-                    <button type="button" class="mf-btn" data-pad-add="━">━ 長劃</button>
-                    <button type="button" class="mf-btn" data-pad-add=" / ">␣ 換下個字母</button>
-                    <button type="button" class="mf-btn clr" data-pad-clr="1">🗑️ 清空</button>
-                  </div>
-                </div>
-              `
-                  : activeMod.id === "big_button"
-                  ? `<p>幫偵察員盯著右上角倒數計時器！國二一唸出目標數字（1 / 2 / 4 / 5），大喊「放開！」</p>`
-                  : `<p>幫偵察員聽國二的走法指令（「上、右、下...」），小心不要讓猴子撞到隱形雷射牆！</p>`
-              }
-            </div>
-          </section>
+            <section class="panel-bomb" id="panel-bomb"></section>
+          </div>
         `;
       } else {
-        scratchOrCompanionHtml = `
-          <section class="panel-scratch" id="panel-scratch">
-            <div class="scratch-mod-bar">
-              <div>
-                <span class="scratch-mod-badge">${isModSolved ? "✅ 已解除" : `🧩 模組 ${state.activeModuleIdx + 1}/${modules.length}`}</span>
-                <strong>${escapeHtml(activeMod.title)}</strong>
-                <div class="scratch-goal-txt">🎯 ${escapeHtml(activeMod.goalHint)}</div>
-              </div>
-              ${
-                role === "coder"
-                  ? `
-                <div class="coder-mod-tabs">
-                  ${modules
-                    .map((m, i) => `<button type="button" class="coder-mod-pill ${i === state.activeModuleIdx ? "active" : ""} ${solvedSet.has(m.id) ? "solved" : ""}" data-coder-mod="${i}">${solvedSet.has(m.id) ? "✅" : m.kind === "minigame" ? `🕹️${i + 1}` : `🧩${i + 1}`}</button>`)
-                    .join("")}
-                </div>
-              `
-                  : ""
-              }
-            </div>
-
-            <div class="scratch-editor-host" id="scratch-editor-host"></div>
-
-            <div class="scratch-run-bar">
-              <div class="run-status-wrap" id="safety-status-wrap">
-                ${
-                  role === "coder" && rs.safetyLockRequired && !isModSolved
-                    ? needsSafetyUnlock
-                      ? `<span class="lock-wait">🔒 等待旁邊「國一偵察員」按下解除保險後才能執行</span>`
-                      : `<span class="lock-ready">🔓 偵察員已解除保險！準備好就可以執行拆彈</span>`
-                    : `<span class="run-hint">💡 寫好積木後按執行，系統會逐條測試你的 Scratch 邏輯</span>`
-                }
-              </div>
-              <div class="run-btns">
-                <button type="button" class="btn-run-bomb" id="btn-run-scratch" ${isModSolved || needsSafetyUnlock ? "disabled" : ""}>
-                  ${isModSolved ? "✅ 此模組已解除" : "▶ 執行 Scratch 拆彈"}
+        // Scratch 程式關卡：最多兩欄！左欄題目+執行，右欄切換「Scratch 積木」或「PY對照表」
+        const isRefTab = state.defuserRightTab === "pyref";
+        mainWorkspaceHtml = `
+          <div class="role-focus-tip defuser">
+            <strong>💣 你是本關【拆彈手】</strong> — 問指揮官這關怎麼寫，右邊拼好積木後點「▶ 執行程式」！
+          </div>
+          <div class="clean-split-2 defuser-split">
+            <div class="left-col-stack">
+              <section class="panel-bomb" id="panel-bomb"></section>
+              <div class="scratch-run-card">
+                <button type="button" class="btn-run-bomb" id="btn-run-scratch" ${isModSolved ? "disabled" : ""}>
+                  ${isModSolved ? "✅ 此關已解除" : "▶ 執行 Scratch 拆彈"}
                 </button>
+                <div class="exec-log-box" id="exec-log-box">${renderExecLogHtml()}</div>
               </div>
             </div>
 
-            <div class="exec-log-box" id="exec-log-box">${renderExecLogHtml()}</div>
-          </section>
+            <section class="panel-scratch-tabs">
+              <div class="right-pane-tabs">
+                <button type="button" class="rp-tab ${!isRefTab ? "active" : ""}" data-def-tab="scratch">🧩 Scratch 積木工作區</button>
+                <button type="button" class="rp-tab ${isRefTab ? "active" : ""}" data-def-tab="pyref">📖 PY ↔ Scratch 對照表</button>
+              </div>
+              <div id="scratch-pane-wrap" class="${isRefTab ? "hidden" : ""}">
+                <div class="scratch-goal-strip">🎯 <b>${escapeHtml(activeMod.title)}：</b>${escapeHtml(activeMod.goalHint)}</div>
+                <div class="scratch-editor-host" id="scratch-editor-host"></div>
+              </div>
+              <div id="pyref-pane-wrap" class="${isRefTab ? "" : "hidden"}">
+                <aside class="panel-pyref-inline" id="panel-pyref"></aside>
+              </div>
+            </section>
+          </div>
+        `;
+      }
+    } else {
+      // 指揮官畫面：完全看不到炸彈！小遊戲置中大卡片，程式關卡左規則+右對照表
+      if (isMiniGame) {
+        mainWorkspaceHtml = `
+          <div class="stage-centered wide">
+            <div class="role-focus-tip manual">
+              <strong>📖 你是本關【指揮官】</strong> — 你看不到炸彈！聽拆彈手報出線索，口頭指揮過關！
+            </div>
+            <section class="panel-manual" id="panel-manual"></section>
+          </div>
+        `;
+      } else {
+        mainWorkspaceHtml = `
+          <div class="role-focus-tip manual">
+            <strong>📖 你是本關【指揮官】</strong> — 你看不到炸彈！先問左側 2 個問題鎖定規則，再參考右邊對照表教拆彈手拼 Scratch！
+          </div>
+          <div class="clean-split-2 manual-split">
+            <section class="panel-manual" id="panel-manual"></section>
+            <aside class="panel-pyref" id="panel-pyref"></aside>
+          </div>
         `;
       }
     }
 
-    const layoutModeClass =
-      showBomb && showScratchArea
-        ? "layout-split2"
-        : "layout-single";
-
     return `
       <div class="game-shell">
-        ${demoSwitcher}
-        ${coopPartnerBanner}
-        ${radioBar}
-        <div class="game-grid ${layoutModeClass} ${state.showPyRef ? "has-ref" : ""}">
-          ${showBomb ? `<section class="panel-bomb" id="panel-bomb"></section>` : ""}
-          ${scratchOrCompanionHtml}
-          ${showManual ? `<section class="panel-manual" id="panel-manual"></section>` : ""}
-          ${state.showPyRef ? `<aside class="panel-pyref" id="panel-pyref"></aside>` : ""}
-        </div>
+        ${ribbonHtml}
+        ${swapBannerHtml}
+        ${mainWorkspaceHtml}
       </div>
     `;
   }
 
   function renderExecLogHtml() {
     if (!state.lastExecLog) {
-      return `<div class="exec-empty">📋 執行紀錄區：按下「▶ 執行 Scratch 拆彈」後，這裡會顯示逐步驗證與除錯訊息。</div>`;
+      return `<div class="exec-empty">📋 按下「▶ 執行 Scratch 拆彈」後，這裡會顯示測試步驟與結果。</div>`;
     }
     const log = state.lastExecLog;
     return `
@@ -640,6 +744,37 @@
             ? `<ul class="exec-steps">${log.logs.map((l) => `<li>${escapeHtml(l)}</li>`).join("")}</ul>`
             : ""
         }
+      </div>
+    `;
+  }
+
+  // ==================== 步驟 4：結算畫面 ====================
+  function renderEndScreen() {
+    const rs = state.roomState;
+    const isWon = rs.status === "won";
+    const rem = getComputedRemainingSec();
+
+    return `
+      <div class="end-screen ${isWon ? "won" : "lost"}">
+        <div class="end-card">
+          <div class="end-emoji">${isWon ? "🎉🍌🏆" : "💥🍌💀"}</div>
+          <h1>${isWon ? "完美拆彈！實驗室得救了！" : "轟隆！炸彈引爆了！"}</h1>
+          <p class="end-reason">${escapeHtml(rs.endReason || "")}</p>
+          <div class="end-stats">
+            <div class="stat-box"><span>小隊名稱</span><strong>${escapeHtml(rs.teamName || rs.code)}</strong></div>
+            <div class="stat-box"><span>${rs.unlimitedTime ? "完成耗時" : "剩餘時間"}</span><strong>${formatTime(rem)}</strong></div>
+            <div class="stat-box"><span>完成關卡</span><strong>${(rs.solvedModules || []).length} / ${state.mission ? state.mission.modules.length : (rs.selectedModuleIds || []).length}</strong></div>
+            <div class="stat-box"><span>累積失誤</span><strong>${rs.strikes} / ${rs.maxStrikes}</strong></div>
+          </div>
+          <div class="end-actions">
+            ${
+              rs.teacherOnlyStart
+                ? `<span class="wait-teacher-txt">⏳ 等待老師統一重開或回等待室...</span>`
+                : `<button type="button" class="btn-primary-xl" id="btn-play-again">🔄 換新題目再挑戰一局</button>`
+            }
+            <button type="button" class="btn-secondary big" id="btn-end-lobby">🏠 回到房間等待室</button>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -660,19 +795,13 @@
       const s = rs.strikes;
       const m = rs.maxStrikes;
       strikesEl.innerHTML = Array.from({ length: m }, (_, i) =>
-        i < s ? '<span class="strike-x hit">✖</span>' : '<span class="strike-x">○</span>'
+        i < s ? '<span class="strike-x hit">✖</span>' : '<span class="strike-x">❤️</span>'
       ).join("");
     }
 
     const progEl = document.getElementById("hud-progress");
     if (progEl && state.mission) {
-      progEl.textContent = `✅ ${(rs.solvedModules || []).length}/${state.mission.modules.length} 解除`;
-    }
-
-    const radioLatest = document.getElementById("radio-latest");
-    if (radioLatest && rs.radioFeed && rs.radioFeed.length > 0) {
-      const last = rs.radioFeed[rs.radioFeed.length - 1];
-      radioLatest.innerHTML = `<span>最新：<b>${escapeHtml(last.senderName)}</b>「${escapeHtml(last.text)}」</span>`;
+      progEl.textContent = `🚩 ${(rs.solvedModules || []).length}/${state.mission.modules.length} 關`;
     }
 
     if (bombCtrl) bombCtrl.update(rs);
@@ -682,45 +811,36 @@
     const activeMod = modules[state.activeModuleIdx];
     const solvedSet = new Set(rs.solvedModules || []);
     const isModSolved = activeMod && solvedSet.has(activeMod.id);
-    const isMiniGame = activeMod && activeMod.kind === "minigame";
-    const needsSafetyUnlock =
-      state.role === "coder" &&
-      !isMiniGame &&
-      rs.safetyLockRequired &&
-      activeMod &&
-      rs.safetyUnlockedFor !== activeMod.id;
 
     const runBtn = document.getElementById("btn-run-scratch");
     if (runBtn) {
-      runBtn.disabled = Boolean(isModSolved || needsSafetyUnlock);
-      runBtn.textContent = isModSolved ? "✅ 此模組已解除" : "▶ 執行 Scratch 拆彈";
+      runBtn.disabled = Boolean(isModSolved);
+      runBtn.textContent = isModSolved ? "✅ 此關已解除" : "▶ 執行 Scratch 拆彈";
     }
-    const statusWrap = document.getElementById("safety-status-wrap");
-    if (statusWrap && state.role === "coder" && !isMiniGame && rs.safetyLockRequired && !isModSolved) {
-      statusWrap.innerHTML = needsSafetyUnlock
-        ? `<span class="lock-wait">🔒 等待旁邊「國一偵察員」按下解除保險後才能執行</span>`
-        : `<span class="lock-ready">🔓 偵察員已解除保險！準備好就可以執行拆彈</span>`;
-    }
-    document.querySelectorAll("[data-coder-mod]").forEach((btn) => {
-      const idx = Number(btn.dataset.coderMod);
-      const m = modules[idx];
-      if (m) {
-        btn.classList.toggle("solved", solvedSet.has(m.id));
-        btn.textContent = solvedSet.has(m.id) ? "✅" : m.kind === "minigame" ? `🕹️${idx + 1}` : `🧩${idx + 1}`;
-      }
-    });
   }
 
   function renderApp() {
+    const view = state.view;
     const rs = state.roomState;
-    const status = rs ? rs.status : "lobby";
-    const seed = rs ? rs.seed : "";
-    const sig =
-      status === "playing"
-        ? `playing|${seed}|${state.role}|${state.activeModuleIdx}|${state.demoTab}|${state.showPyRef}|${state.swapFlag}`
-        : status === "lobby"
-        ? `lobby|${state.roomCode}|${state.role}|${state.selectedPreset}|${state.selectedModuleIds.join(",")}|${state.safetyLockRequired}|${(rs && rs.players ? rs.players.length : 0)}`
-        : `${status}|${seed}|${rs ? rs.strikes : 0}`;
+    const status = view === "room" && rs ? rs.status : view;
+    const myRole = view === "room" && rs && rs.status === "playing" ? getMyTurnRole() : "";
+
+    let sig = `${view}|${state.syncMode}`;
+    if (view === "entry") {
+      sig = `entry|${state.entryError}|${state.joining}|${state.syncMode}`;
+    } else if (view === "teacher") {
+      const tf = state.teacherForm;
+      sig = `teacher|${tf.code}|${tf.preset}|${tf.selectedModuleIds.join(",")}|${tf.rotateRoles}|${tf.teacherOnlyStart}|${state.teacherNotice}`;
+    } else if (view === "room" && rs) {
+      if (rs.status === "playing") {
+        const swapVis = state.swapBannerText && Date.now() < state.swapBannerUntil ? state.swapBannerText : "";
+        sig = `playing|${rs.seed}|${myRole}|${rs.activeModuleIndex}|${state.activeModuleIdx}|${rs.turnIndex}|${(rs.players || []).map((p) => p.clientId).join(",")}|${swapVis}`;
+      } else if (rs.status === "lobby") {
+        sig = `lobby|${rs.code}|${rs.teamName}|${rs.preset}|${rs.rotateRoles}|${rs.teacherOnlyStart}|${(rs.players || []).map((p) => p.clientId + ":" + p.name + ":" + p.ready).join(",")}`;
+      } else {
+        sig = `end|${rs.status}|${rs.seed}|${rs.strikes}|${rs.teacherOnlyStart}`;
+      }
+    }
 
     if (sig === renderedSignature && status === "playing") {
       updatePlayingHudAndStatusOnly();
@@ -734,9 +854,13 @@
     }
 
     let bodyHtml = "";
-    if (status === "lobby") {
-      bodyHtml = renderLobby();
-    } else if (status === "won" || status === "lost") {
+    if (view === "entry") {
+      bodyHtml = renderEntryView();
+    } else if (view === "teacher") {
+      bodyHtml = renderTeacherView();
+    } else if (!rs || rs.status === "lobby" || rs.status === "closed") {
+      bodyHtml = renderRoomLobbyView();
+    } else if (rs.status === "won" || rs.status === "lost") {
       bodyHtml = renderEndScreen();
     } else {
       bodyHtml = renderGameLayout();
@@ -745,136 +869,392 @@
     root.innerHTML = `${renderTopBar()}<main class="main-area">${bodyHtml}</main>`;
     bindGlobalHeaderEvents();
 
-    if (status === "lobby") bindLobbyEvents();
-    else if (status === "won" || status === "lost") bindEndEvents();
+    if (view === "entry") bindEntryEvents();
+    else if (view === "teacher") bindTeacherEvents();
+    else if (!rs || rs.status === "lobby" || rs.status === "closed") bindRoomLobbyEvents();
+    else if (rs.status === "won" || rs.status === "lost") bindEndEvents();
     else mountGameSubComponents();
   }
 
   function bindGlobalHeaderEvents() {
-    const pyBtn = document.getElementById("btn-toggle-pyref");
-    if (pyBtn) {
-      pyBtn.addEventListener("click", () => {
-        state.showPyRef = !state.showPyRef;
-        renderedSignature = "";
-        renderApp();
-      });
-    }
     const muteBtn = document.getElementById("btn-mute");
     if (muteBtn) {
       muteBtn.addEventListener("click", () => {
         const m = BNN.Sound.toggleMute();
-        muteBtn.textContent = m ? "🔇 靜音" : "🔊 音效";
+        muteBtn.textContent = m ? "🔇" : "🔊";
       });
     }
     const helpBtn = document.getElementById("btn-help");
-    if (helpBtn) helpBtn.addEventListener("click", openHelpModal);
+    if (helpBtn) helpBtn.addEventListener("click", () => openModal("help-modal"));
 
-    const backBtn = document.getElementById("btn-back-lobby");
-    if (backBtn) {
-      backBtn.addEventListener("click", () => {
-        syncClient.sendAction("backToLobby");
+    const lbBtn = document.getElementById("btn-open-lb");
+    if (lbBtn) {
+      lbBtn.addEventListener("click", async () => {
+        await refreshLeaderboard();
+        openModal("lb-modal");
+      });
+    }
+
+    const leaveBtn = document.getElementById("btn-leave-room");
+    if (leaveBtn) {
+      leaveBtn.addEventListener("click", async () => {
+        await syncClient.leaveRoom();
+        state.roomState = null;
+        state.mission = null;
+        state.entryError = "";
+        state.view = "entry";
+        renderedSignature = "";
+        renderApp();
       });
     }
   }
 
-  function bindLobbyEvents() {
+  function bindEntryEvents() {
+    const form = document.getElementById("entry-form");
     const codeInp = document.getElementById("inp-room-code");
-    if (codeInp) {
-      codeInp.addEventListener("change", (e) => {
-        const clean = e.target.value.trim().toUpperCase().replace(/[^A-Z0-9\-_]/g, "") || "BNN-101";
-        state.roomCode = clean;
-        e.target.value = clean;
-        syncClient.joinRoom(state.roomCode, state.role, state.playerName);
-      });
-    }
-
     const nameInp = document.getElementById("inp-player-name");
+    const teacherBtn = document.getElementById("btn-goto-teacher");
+
+    if (codeInp) {
+      codeInp.addEventListener("input", (e) => {
+        state.roomCode = e.target.value.toUpperCase();
+        state.entryError = "";
+      });
+    }
     if (nameInp) {
-      nameInp.addEventListener("change", (e) => {
-        state.playerName = e.target.value.trim() || "香蕉特務";
-        syncClient.joinRoom(state.roomCode, state.role, state.playerName);
+      nameInp.addEventListener("input", (e) => {
+        state.playerName = e.target.value;
+        state.entryError = "";
+      });
+    }
+    if (form) {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const cleanCode = String(state.roomCode || "")
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9\-_]/g, "");
+        const cleanName = String(state.playerName || "").trim();
+
+        if (!cleanCode) {
+          state.entryError = "請輸入老師給的房號！";
+          renderedSignature = "";
+          renderApp();
+          return;
+        }
+        if (!cleanName) {
+          state.entryError = "請先輸入你的暱稱！";
+          renderedSignature = "";
+          renderApp();
+          return;
+        }
+
+        state.roomCode = cleanCode;
+        state.playerName = cleanName;
+        state.joining = true;
+        state.entryError = "";
+        renderedSignature = "";
+        renderApp();
+
+        if (BNN.Sound) BNN.Sound.unlock();
+        const res = await syncClient.joinRoom(cleanCode, cleanName);
+        state.joining = false;
+        if (res.ok) {
+          try {
+            global.sessionStorage.setItem("bnn_last_join", JSON.stringify({ code: cleanCode, name: cleanName }));
+          } catch (_) {}
+          state.view = "room";
+          if (BNN.Sound) BNN.Sound.click();
+          renderedSignature = "";
+          onRoomStateUpdate(res.state);
+          return;
+        } else {
+          state.entryError = res.message || "無法進入此房間，請確認房號！";
+        }
+        renderedSignature = "";
+        renderApp();
+      });
+    }
+    if (teacherBtn) {
+      teacherBtn.addEventListener("click", async () => {
+        state.view = "teacher";
+        state.teacherNotice = "";
+        state.teacherRooms = await syncClient.fetchRooms();
+        startTeacherPolling();
+        renderedSignature = "";
+        renderApp();
+      });
+    }
+  }
+
+  function startTeacherPolling() {
+    if (teacherPollTimer) clearInterval(teacherPollTimer);
+    teacherPollTimer = setInterval(async () => {
+      if (state.view !== "teacher") {
+        clearInterval(teacherPollTimer);
+        teacherPollTimer = null;
+        return;
+      }
+      state.teacherRooms = await syncClient.fetchRooms();
+      const listEl = document.getElementById("teacher-rooms-list");
+      if (listEl) {
+        listEl.innerHTML = renderTeacherRoomsHtml();
+        bindTeacherRoomListButtons();
+      }
+    }, 2500);
+  }
+
+  function bindTeacherRoomListButtons() {
+    document.querySelectorAll("[data-t-copy]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const code = btn.dataset.tCopy;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(code).catch(() => {});
+        }
+        showToast(`已複製房號 ${code}！快請學生輸入這組房號！`, "info");
+      });
+    });
+
+    document.querySelectorAll("[data-t-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const code = btn.dataset.tEdit;
+        const rm = state.teacherRooms.find((r) => r.code === code);
+        if (!rm) return;
+        state.teacherForm.code = rm.code;
+        state.teacherForm.teamName = rm.teamName;
+        state.teacherForm.preset = rm.preset;
+        state.teacherForm.selectedModuleIds = (rm.selectedModuleIds || []).slice();
+        state.teacherForm.rotateRoles = Boolean(rm.rotateRoles);
+        state.teacherForm.teacherOnlyStart = Boolean(rm.teacherOnlyStart);
+        state.teacherNotice = `已載入「${rm.code}（${rm.teamName}）」，修改後按「✅ 建立／發布此房間」即可更新。`;
+        renderedSignature = "";
+        renderApp();
+      });
+    });
+
+    document.querySelectorAll("[data-t-start]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const code = btn.dataset.tStart;
+        await syncClient.teacherAction(code, "startGame");
+        state.teacherRooms = await syncClient.fetchRooms();
+        const listEl = document.getElementById("teacher-rooms-list");
+        if (listEl) {
+          listEl.innerHTML = renderTeacherRoomsHtml();
+          bindTeacherRoomListButtons();
+        }
+        showToast(`🚀 房間 ${code} 已啟動！`, "success");
+      });
+    });
+
+    document.querySelectorAll("[data-t-reset]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const code = btn.dataset.tReset;
+        await syncClient.teacherAction(code, "backToLobby");
+        state.teacherRooms = await syncClient.fetchRooms();
+        const listEl = document.getElementById("teacher-rooms-list");
+        if (listEl) {
+          listEl.innerHTML = renderTeacherRoomsHtml();
+          bindTeacherRoomListButtons();
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-t-del]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const code = btn.dataset.tDel;
+        await syncClient.deleteTeacherRoom(code);
+        state.teacherRooms = await syncClient.fetchRooms();
+        const listEl = document.getElementById("teacher-rooms-list");
+        if (listEl) {
+          listEl.innerHTML = renderTeacherRoomsHtml();
+          bindTeacherRoomListButtons();
+        }
+        showToast(`已刪除房間 ${code}`, "info");
+      });
+    });
+  }
+
+  function bindTeacherEvents() {
+    const tf = state.teacherForm;
+    const backBtn = document.getElementById("btn-teacher-back");
+    if (backBtn) {
+      backBtn.addEventListener("click", () => {
+        if (teacherPollTimer) {
+          clearInterval(teacherPollTimer);
+          teacherPollTimer = null;
+        }
+        state.view = "entry";
+        renderedSignature = "";
+        renderApp();
       });
     }
 
-    const teamInp = document.getElementById("inp-team-name");
+    const codeInp = document.getElementById("t-room-code");
+    if (codeInp) {
+      codeInp.addEventListener("input", (e) => {
+        tf.code = e.target.value.toUpperCase();
+      });
+    }
+    const teamInp = document.getElementById("t-team-name");
     if (teamInp) {
       teamInp.addEventListener("input", (e) => {
-        state.teamName = e.target.value;
+        tf.teamName = e.target.value;
       });
     }
-
-    const randBtn = document.getElementById("btn-rand-code");
+    const randBtn = document.getElementById("btn-t-rand");
     if (randBtn) {
       randBtn.addEventListener("click", () => {
-        state.roomCode = BNN.randomRoomCode();
-        if (BNN.Sound) BNN.Sound.click();
-        syncClient.joinRoom(state.roomCode, state.role, state.playerName);
+        tf.code = BNN.randomRoomCode();
+        renderedSignature = "";
         renderApp();
       });
     }
 
-    document.querySelectorAll("[data-select-role]").forEach((btn) => {
+    document.querySelectorAll("[data-t-preset]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        state.role = btn.dataset.selectRole;
-        if (BNN.Sound) BNN.Sound.click();
-        syncClient.joinRoom(state.roomCode, state.role, state.playerName);
-        renderApp();
-      });
-    });
-
-    document.querySelectorAll("[data-preset]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const key = btn.dataset.preset;
-        state.selectedPreset = key;
+        const key = btn.dataset.tPreset;
+        tf.preset = key;
         if (BNN.PRESET_MODULES && BNN.PRESET_MODULES[key]) {
-          state.selectedModuleIds = BNN.PRESET_MODULES[key].slice();
+          tf.selectedModuleIds = BNN.PRESET_MODULES[key].slice();
         }
         if (BNN.Sound) BNN.Sound.click();
+        renderedSignature = "";
         renderApp();
       });
     });
 
-    document.querySelectorAll("[data-pick-mod]").forEach((btn) => {
+    document.querySelectorAll("[data-t-mod]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const id = btn.dataset.pickMod;
-        const idx = state.selectedModuleIds.indexOf(id);
+        const id = btn.dataset.tMod;
+        const idx = tf.selectedModuleIds.indexOf(id);
         if (idx >= 0) {
-          if (state.selectedModuleIds.length > 1) state.selectedModuleIds.splice(idx, 1);
-          else showToast("至少要選擇 1 個拆彈模組喔！", "danger");
+          if (tf.selectedModuleIds.length > 1) tf.selectedModuleIds.splice(idx, 1);
+          else showToast("至少要留 1 個關卡喔！", "danger");
         } else {
-          state.selectedModuleIds.push(id);
+          tf.selectedModuleIds.push(id);
         }
-        if (BNN.Sound) BNN.Sound.click();
+        renderedSignature = "";
         renderApp();
       });
     });
 
-    const lockChk = document.getElementById("chk-safety-lock");
-    if (lockChk) {
-      lockChk.addEventListener("change", (e) => {
-        state.safetyLockRequired = e.target.checked;
+    const rotChk = document.getElementById("chk-t-rotate");
+    if (rotChk) rotChk.addEventListener("change", (e) => (tf.rotateRoles = e.target.checked));
+    const onlyChk = document.getElementById("chk-t-teacher-only");
+    if (onlyChk) onlyChk.addEventListener("change", (e) => (tf.teacherOnlyStart = e.target.checked));
+
+    const saveBtn = document.getElementById("btn-t-save");
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        const presetCfg = PRESETS[tf.preset] || PRESETS.mix;
+        const cleanCode = String(tf.code || "").trim().toUpperCase().replace(/[^A-Z0-9\-_]/g, "") || "TEAM-01";
+        tf.code = cleanCode;
+        const res = await syncClient.saveTeacherRoom({
+          code: cleanCode,
+          teamName: String(tf.teamName || "").trim() || `小隊 ${cleanCode}`,
+          preset: tf.preset,
+          selectedModuleIds: tf.selectedModuleIds.slice(),
+          durationSec: presetCfg.durationSec,
+          unlimitedTime: presetCfg.unlimitedTime,
+          rotateRoles: tf.rotateRoles,
+          teacherOnlyStart: tf.teacherOnlyStart
+        });
+        if (res && res.ok) {
+          state.teacherNotice = `✅ 房間「${cleanCode}（${res.room.teamName}）」已發布！請學生輸入房號 ${cleanCode} 與暱稱進房。`;
+          state.teacherRooms = await syncClient.fetchRooms();
+          showToast(`已發布房間 ${cleanCode}！`, "success");
+          renderedSignature = "";
+          renderApp();
+        }
       });
     }
 
-    const startBtn = document.getElementById("btn-start-game");
-    if (startBtn) {
-      startBtn.addEventListener("click", () => {
-        if (state.selectedModuleIds.length === 0) return;
-        const cfg = PRESETS[state.selectedPreset] || PRESETS.mix;
-        const freshSeed =
-          syncClient.getMode() === "server"
-            ? `${state.roomCode}-${Math.floor(Date.now() / 1000) % 10000}`
-            : state.roomCode;
-        if (BNN.Sound) BNN.Sound.unlock();
-        syncClient.sendAction("startGame", {
-          preset: state.selectedPreset,
-          selectedModuleIds: state.selectedModuleIds.slice(),
-          teamName: state.teamName,
-          durationSec: cfg.durationSec,
-          unlimitedTime: cfg.unlimitedTime,
-          safetyLockRequired: state.safetyLockRequired,
-          seed: freshSeed
+    const prefixInp = document.getElementById("t-batch-prefix");
+    if (prefixInp) prefixInp.addEventListener("input", (e) => (tf.batchPrefix = e.target.value.toUpperCase()));
+    const countSel = document.getElementById("t-batch-count");
+    if (countSel) countSel.addEventListener("change", (e) => (tf.batchCount = Number(e.target.value)));
+
+    const batchBtn = document.getElementById("btn-t-batch");
+    if (batchBtn) {
+      batchBtn.addEventListener("click", async () => {
+        const presetCfg = PRESETS[tf.preset] || PRESETS.mix;
+        const res = await syncClient.batchCreateRooms({
+          prefix: tf.batchPrefix || "TEAM",
+          count: tf.batchCount || 4,
+          preset: tf.preset,
+          selectedModuleIds: tf.selectedModuleIds.slice(),
+          durationSec: presetCfg.durationSec,
+          unlimitedTime: presetCfg.unlimitedTime,
+          rotateRoles: tf.rotateRoles,
+          teacherOnlyStart: tf.teacherOnlyStart
         });
+        if (res && res.ok) {
+          state.teacherRooms = await syncClient.fetchRooms();
+          const codes = (res.rooms || []).map((r) => r.code).join("、");
+          state.teacherNotice = `⚡ 已批次建立 ${res.rooms.length} 間房間：${codes}`;
+          showToast(`成功建立 ${res.rooms.length} 組班級房間！`, "success");
+          renderedSignature = "";
+          renderApp();
+        }
+      });
+    }
+
+    const refreshBtn = document.getElementById("btn-t-refresh");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", async () => {
+        state.teacherRooms = await syncClient.fetchRooms();
+        const listEl = document.getElementById("teacher-rooms-list");
+        if (listEl) {
+          listEl.innerHTML = renderTeacherRoomsHtml();
+          bindTeacherRoomListButtons();
+        }
+      });
+    }
+
+    bindTeacherRoomListButtons();
+  }
+
+  function bindRoomLobbyEvents() {
+    const backClosed = document.getElementById("btn-closed-back");
+    if (backClosed) {
+      backClosed.addEventListener("click", async () => {
+        await syncClient.leaveRoom();
+        state.roomState = null;
+        state.view = "entry";
+        renderedSignature = "";
+        renderApp();
+      });
+    }
+
+    const backBtn = document.getElementById("btn-lobby-back");
+    if (backBtn) {
+      backBtn.addEventListener("click", async () => {
+        await syncClient.leaveRoom();
+        state.roomState = null;
+        state.view = "entry";
+        renderedSignature = "";
+        renderApp();
+      });
+    }
+
+    const readyBtn = document.getElementById("btn-toggle-ready");
+    if (readyBtn) {
+      readyBtn.addEventListener("click", () => {
+        if (BNN.Sound) BNN.Sound.click();
+        syncClient.sendAction("toggleReady");
+      });
+    }
+
+    const startBtn = document.getElementById("btn-start-mission");
+    if (startBtn) {
+      startBtn.addEventListener("click", async () => {
+        if (BNN.Sound) BNN.Sound.unlock();
+        const rs = state.roomState;
+        const freshSeed = `${rs.code}-${Math.floor(Date.now() / 1000) % 10000}`;
+        const res = await syncClient.sendAction("startGame", { seed: freshSeed });
+        if (res && res.error === "TEACHER_ONLY_START") {
+          showToast(res.message, "danger");
+        }
       });
     }
   }
@@ -883,22 +1263,9 @@
     const againBtn = document.getElementById("btn-play-again");
     if (againBtn) {
       againBtn.addEventListener("click", () => {
-        const cfg = PRESETS[state.selectedPreset] || PRESETS.mix;
-        const newCode = syncClient.getMode() === "local" ? BNN.randomRoomCode() : state.roomCode;
-        state.roomCode = newCode;
-        const freshSeed =
-          syncClient.getMode() === "server"
-            ? `${newCode}-${Math.floor(Date.now() / 1000) % 10000}`
-            : newCode;
-        syncClient.sendAction("startGame", {
-          preset: state.selectedPreset,
-          selectedModuleIds: state.selectedModuleIds.slice(),
-          teamName: state.teamName,
-          durationSec: cfg.durationSec,
-          unlimitedTime: cfg.unlimitedTime,
-          safetyLockRequired: state.safetyLockRequired,
-          seed: freshSeed
-        });
+        const rs = state.roomState;
+        const freshSeed = `${rs.code}-${Math.floor(Date.now() / 1000) % 10000}`;
+        syncClient.sendAction("startGame", { seed: freshSeed });
       });
     }
     const lobbyBtn = document.getElementById("btn-end-lobby");
@@ -914,6 +1281,7 @@
     const mission = state.mission;
     const modules = mission.modules || [];
     const activeMod = modules[state.activeModuleIdx];
+    const myRole = getMyTurnRole();
 
     manualCtrl = null;
     workspaceCtrl = null;
@@ -927,23 +1295,9 @@
     }
 
     const bombHost = document.getElementById("panel-bomb");
-    if (bombHost) {
+    if (bombHost && myRole === "defuser") {
       bombCtrl = BNN.renderBombPanel(bombHost, mission, rs, {
-        showSafetySwitch: state.role === "observer" && rs.safetyLockRequired,
         getTimerDisplay: () => formatTime(getComputedRemainingSec()),
-        onSelectModule(idx) {
-          state.activeModuleIdx = idx;
-          state.lastExecLog = null;
-          if (state.role === "observer") {
-            syncClient.sendAction("selectModule", { moduleIndex: idx });
-          } else {
-            renderedSignature = "";
-            renderApp();
-          }
-        },
-        onToggleSafety(modId) {
-          syncClient.sendAction("toggleSafetyLock", { moduleId: modId });
-        },
         onMazeMove(pos) {
           syncClient.sendAction("mazeMove", { pos });
         },
@@ -965,7 +1319,7 @@
     }
 
     const scrHost = document.getElementById("scratch-editor-host");
-    if (scrHost && activeMod && activeMod.kind === "scratch") {
+    if (scrHost && activeMod && activeMod.kind === "scratch" && myRole === "defuser") {
       workspaceCtrl = BNN.createWorkspaceEditor(
         scrHost,
         activeMod,
@@ -977,70 +1331,59 @@
     }
 
     const manHost = document.getElementById("panel-manual");
-    if (manHost) {
+    if (manHost && myRole === "manual") {
       manualCtrl = BNN.renderManualView(manHost, mission, rs, (cat) => {
         if (pyRefCtrl) pyRefCtrl.filterCategory(cat);
       });
     }
 
-    // Bind Radio callouts
-    document.querySelectorAll("[data-radio-txt]").forEach((btn) => {
+    // Bind Step Chips
+    document.querySelectorAll("[data-step-mod]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        if (BNN.Sound) BNN.Sound.radioPing();
-        syncClient.sendAction("radioPing", {
-          text: btn.dataset.radioTxt,
-          senderName: state.playerName,
-          senderRole: state.role
-        });
-      });
-    });
-
-    // Bind Coder Morse helper pad
-    document.querySelectorAll("[data-pad-add]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.morseScratchpad += btn.dataset.padAdd;
-        const padEl = document.getElementById("coder-morse-pad");
-        if (padEl) padEl.textContent = state.morseScratchpad;
-      });
-    });
-    const padClr = document.querySelector("[data-pad-clr]");
-    if (padClr) {
-      padClr.addEventListener("click", () => {
-        state.morseScratchpad = "";
-        const padEl = document.getElementById("coder-morse-pad");
-        if (padEl) padEl.textContent = "尚未紀錄...";
-      });
-    }
-
-    document.querySelectorAll("[data-demo-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.demoTab = btn.dataset.demoTab;
-        renderedSignature = "";
-        renderApp();
-      });
-    });
-
-    document.querySelectorAll("[data-coder-mod]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const idx = Number(btn.dataset.coderMod);
+        const idx = Number(btn.dataset.stepMod);
         state.activeModuleIdx = idx;
         state.lastExecLog = null;
+        state.defuserRightTab = "scratch";
+        if (BNN.Sound) BNN.Sound.click();
         syncClient.sendAction("selectModule", { moduleIndex: idx });
         renderedSignature = "";
         renderApp();
       });
     });
 
-    const swapBtn = document.getElementById("btn-manual-swap");
-    if (swapBtn) {
-      swapBtn.addEventListener("click", () => {
-        state.swapFlag = !state.swapFlag;
+    // Solo Perspective Tabs
+    document.querySelectorAll("[data-solo-view]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.soloView = btn.dataset.soloView;
         if (BNN.Sound) BNN.Sound.click();
         renderedSignature = "";
         renderApp();
       });
+    });
+
+    // Manual Role Rotate Button
+    const rotBtn = document.getElementById("btn-manual-rotate");
+    if (rotBtn) {
+      rotBtn.addEventListener("click", () => {
+        if (BNN.Sound) BNN.Sound.click();
+        syncClient.sendAction("rotateTurn");
+      });
     }
 
+    // Defuser Right Pane Tabs (Scratch Blocks <-> PY Reference) without losing Scratch AST!
+    document.querySelectorAll("[data-def-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const nextTab = btn.dataset.defTab;
+        state.defuserRightTab = nextTab;
+        document.querySelectorAll("[data-def-tab]").forEach((b) => b.classList.toggle("active", b === btn));
+        const scrWrap = document.getElementById("scratch-pane-wrap");
+        const refWrap = document.getElementById("pyref-pane-wrap");
+        if (scrWrap) scrWrap.classList.toggle("hidden", nextTab !== "scratch");
+        if (refWrap) refWrap.classList.toggle("hidden", nextTab !== "pyref");
+      });
+    });
+
+    // Run Scratch Program
     const runBtn = document.getElementById("btn-run-scratch");
     if (runBtn && activeMod && activeMod.kind === "scratch") {
       runBtn.addEventListener("click", () => {
@@ -1078,6 +1421,7 @@
   function startTimerLoop() {
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
+      if (state.view !== "room") return;
       const rs = state.roomState;
       if (!rs || rs.status !== "playing") return;
       const rem = getComputedRemainingSec();
@@ -1094,28 +1438,39 @@
           syncClient.sendAction("timeout");
         }
       }
+      if (state.swapBannerText && Date.now() >= state.swapBannerUntil) {
+        state.swapBannerText = "";
+        state.swapBannerUntil = 0;
+        const banner = document.querySelector(".swap-callout-banner");
+        if (banner) banner.remove();
+      }
     }, 250);
   }
 
   async function init() {
-    const closeHelp = document.getElementById("btn-close-help");
-    if (closeHelp) closeHelp.addEventListener("click", closeHelpModal);
-    const helpModal = document.getElementById("help-modal");
-    if (helpModal) {
-      helpModal.addEventListener("click", (e) => {
-        if (e.target === helpModal) closeHelpModal();
+    document.querySelectorAll("[data-close-modal]").forEach((btn) => {
+      btn.addEventListener("click", () => closeModal(btn.dataset.closeModal));
+    });
+    document.querySelectorAll(".modal-backdrop").forEach((bd) => {
+      bd.addEventListener("click", (e) => {
+        if (e.target === bd) bd.classList.remove("open");
       });
-    }
+    });
+
+    // Pre-fill last code/name if refreshing browser
+    try {
+      const saved = JSON.parse(global.sessionStorage.getItem("bnn_last_join") || "null");
+      if (saved && saved.code) state.roomCode = saved.code;
+      if (saved && saved.name) state.playerName = saved.name;
+    } catch (_) {}
 
     syncClient = BNN.createSyncClient(onRoomStateUpdate, (detected) => {
       state.syncMode = detected;
-      if (detected === "server") refreshLeaderboard();
       renderApp();
     });
 
     await syncClient.detectServer();
-    await syncClient.joinRoom(state.roomCode, state.role, state.playerName);
-    if (syncClient.getMode() === "server") await refreshLeaderboard();
+    renderApp();
     startTimerLoop();
   }
 

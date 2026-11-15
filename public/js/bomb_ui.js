@@ -1,5 +1,5 @@
 /**
- * bomb_ui.js — 街機風格香蕉炸彈外殼 + 6 程式模組儀表 + 3 大可操作動作小遊戲
+ * bomb_ui.js — 簡潔街機風格香蕉炸彈外殼 + 6 程式模組儀表 + 3 大動作小遊戲
  */
 (function (global) {
   const BNN = (global.BNN = global.BNN || {});
@@ -33,12 +33,7 @@
       .replace(/>/g, "&gt;");
   }
 
-  function renderEdgeworkPanel(edgework, checkedSet) {
-    const batteriesHtml = Array.from({ length: 4 }, (_, i) => {
-      const active = i < edgework.batteries;
-      return `<span class="batt-cell ${active ? "on" : "off"}">${active ? "🍌" : "·"}</span>`;
-    }).join("");
-
+  function renderEdgeworkStrip(edgework) {
     const indList = [
       { key: "TURBO", icon: "🍌", name: "TURBO", on: edgework.indicators.TURBO },
       { key: "OVERLOAD", icon: "⚡", name: "OVERLOAD", on: edgework.indicators.OVERLOAD },
@@ -46,40 +41,34 @@
     ];
 
     return `
-      <div class="edgework-panel">
-        <div class="edge-header">
-          <span>🏷️ 炸彈外殼特徵（國二看不見，請唸給他聽！）</span>
-          <small>點擊卡片可打勾記號</small>
-        </div>
-        <div class="edge-cards">
-          <button type="button" class="edge-card ${checkedSet.has("serial") ? "reported" : ""}" data-edge-mark="serial">
-            <div class="edge-lbl">序號 (Serial)</div>
-            <div class="edge-val mono">${escapeHtml(edgework.serial)}</div>
-            <div class="edge-sub">${edgework.hasVowel ? "含母音" : "無母音"} · 末碼${edgework.serialIsOdd ? "奇數" : "偶數"}</div>
-          </button>
-
-          <button type="button" class="edge-card ${checkedSet.has("batteries") ? "reported" : ""}" data-edge-mark="batteries">
-            <div class="edge-lbl">香蕉電池數</div>
-            <div class="edge-val">${batteriesHtml} <b>(${edgework.batteries} 顆)</b></div>
-            <div class="edge-sub">${edgework.batteries % 2 === 0 ? "偶數顆" : "奇數顆"}</div>
-          </button>
-
-          <button type="button" class="edge-card ${checkedSet.has("label") ? "reported" : ""}" data-edge-mark="label">
-            <div class="edge-lbl">型號標籤</div>
-            <div class="edge-val tag-badge">${escapeHtml(edgework.label)}</div>
-            <div class="edge-sub">實驗室規格</div>
-          </button>
-
-          <button type="button" class="edge-card ${checkedSet.has("ind") ? "reported" : ""}" data-edge-mark="ind">
-            <div class="edge-lbl">狀態指示燈</div>
+      <div class="edge-strip">
+        <div class="edge-strip-title">🏷️ 炸彈外殼特徵（指揮官看不到，問什麼報什麼！）</div>
+        <div class="edge-strip-grid">
+          <div class="edge-tile">
+            <span class="edge-tile-lbl">序號</span>
+            <strong class="mono">${escapeHtml(edgework.serial)}</strong>
+            <small>${edgework.hasVowel ? "含母音" : "無母音"} · 末碼${edgework.serialIsOdd ? "奇數" : "偶數"}</small>
+          </div>
+          <div class="edge-tile">
+            <span class="edge-tile-lbl">電池</span>
+            <strong>🔋 ${edgework.batteries} 顆</strong>
+            <small>${edgework.batteries % 2 === 0 ? "偶數顆" : "奇數顆"}</small>
+          </div>
+          <div class="edge-tile">
+            <span class="edge-tile-lbl">型號</span>
+            <strong class="tag-badge">${escapeHtml(edgework.label)}</strong>
+            <small>外殼標籤</small>
+          </div>
+          <div class="edge-tile edge-tile-leds">
+            <span class="edge-tile-lbl">指示燈</span>
             <div class="edge-inds">
               ${indList
                 .map(
-                  (ind) => `<span class="led-pill ${ind.on ? "on" : "off"}">${ind.icon} ${ind.name}: <b>${ind.on ? "亮" : "滅"}</b></span>`
+                  (ind) => `<span class="led-pill ${ind.on ? "on" : "off"}">${ind.icon} ${ind.name}:${ind.on ? "亮" : "滅"}</span>`
                 )
                 .join("")}
             </div>
-          </button>
+          </div>
         </div>
       </div>
     `;
@@ -88,7 +77,7 @@
   function renderScratchVisualizer(mod, isSolved) {
     if (mod.id === "logic_gate") {
       return `
-        <div class="vis-desc">炸彈執行時將依序送出以下 <b>3 組驗證脈衝</b>，你的 Scratch 程式必須全部輸出正確動作！</div>
+        <div class="vis-desc">程式送出時會同時測試以下 <b>3 組脈衝數值</b>：</div>
         <div class="vis-grid-3">
           ${mod.testCases
             .map(
@@ -106,10 +95,10 @@
     }
     if (mod.id === "loop_coolant") {
       return `
-        <div class="vis-desc">冷卻核心需要透過「重複迴圈」按步驟發射能量脈衝！</div>
+        <div class="vis-desc">透過「重複次數迴圈」依序發射冷卻脈衝：</div>
         <div class="coolant-box">
           <div class="coolant-stat">
-            <span>初始能量感測值 <code>start</code></span>
+            <span>起始感測值 <code>start</code></span>
             <strong>${mod.startVal}</strong>
           </div>
           <div class="coolant-steps">
@@ -122,7 +111,7 @@
     }
     if (mod.id === "wire_array") {
       return `
-        <div class="vis-desc">系統將同時檢查以下 <b>3 組彩線排</b>（每組共 ${mod.wireCount} 條線，由左至右為第 1～${mod.wireCount} 條）：</div>
+        <div class="vis-desc">程式需同時通過這 <b>3 組彩線</b>（每組共 ${mod.wireCount} 條，左起為第 1～${mod.wireCount} 條）：</div>
         <div class="wires-cases">
           ${mod.testCases
             .map(
@@ -151,7 +140,7 @@
     }
     if (mod.id === "while_cooling") {
       return `
-        <div class="vis-desc">反應爐在兩個不同初始溫度下都必須安全降溫並鎖定！（使用 <code>重複直到</code>）</div>
+        <div class="vis-desc">反應爐在兩個初始溫度下都要安全降溫並鎖定（用 <code>重複直到</code>）：</div>
         <div class="vis-grid-2">
           ${mod.testCases
             .map(
@@ -169,7 +158,7 @@
     }
     if (mod.id === "led_binary") {
       return `
-        <div class="vis-desc">讀取 4 顆香蕉燈號清單 <code>leds</code>（亮 = 1，滅 = 0），必須通過以下 2 組測試：</div>
+        <div class="vis-desc">讀取 4 顆香蕉燈清單 <code>leds</code>（亮=1、滅=0），需通過 2 組測試：</div>
         <div class="vis-grid-2">
           ${mod.testCases
             .map(
@@ -197,14 +186,14 @@
     }
     if (mod.id === "func_cipher") {
       return `
-        <div class="vis-desc">實作解密函式 <code>decrypt(x)</code>，你的 Scratch 程式必須對以下 3 個密文輸入回傳正確數字：</div>
+        <div class="vis-desc">對以下 3 個輸入數字 <code>x</code>，算出並回傳正確密碼：</div>
         <div class="vis-grid-3">
           ${mod.testCases
             .map(
               (tc) => `
             <div class="cipher-card">
               <div class="cipher-title">${escapeHtml(tc.name)}</div>
-              <div class="cipher-in">輸入 x = <strong>${tc.x}</strong></div>
+              <div class="cipher-in">x = <strong>${tc.x}</strong></div>
             </div>
           `
             )
@@ -220,14 +209,14 @@
       const btnCls = BTN_COLOR_CLASS[mod.color] || "btn-c-red";
       const stripCls = miniState.stripLit ? STRIP_COLOR_CLASS[mod.stripColor] || "strip-red" : "";
       return `
-        <div class="vis-desc">告訴國二這顆按鈕的「<b>顏色</b>」與「<b>文字</b>」，再決定要快點一下還是長按等光條！</div>
+        <div class="vis-desc">報出按鈕的「<b>顏色</b>」與「<b>文字</b>」給指揮官，照指令快點一下或長按等光條放開！</div>
         <div class="big-btn-stage">
           <div class="big-btn-pedestal">
             <button type="button" id="act-big-btn" class="arcade-big-btn ${btnCls} ${miniState.holding ? "pressed" : ""}" ${isSolved ? "disabled" : ""}>
               <span class="big-btn-color-tag">${escapeHtml(mod.color)}色</span>
               <span class="big-btn-label">${escapeHtml(mod.label)}</span>
             </button>
-            <div class="big-btn-hint">${isSolved ? "✅ 已成功解除！" : miniState.holding ? "⚡ 按住中！快報光條顏色給國二，等指定數字出現放開！" : "👆 點一下 或 長按不放"}</div>
+            <div class="big-btn-hint">${isSolved ? "✅ 已成功解除！" : miniState.holding ? "⚡ 按住中！快報光條顏色給指揮官，等目標數字出現放開！" : "👆 點一下放開 或 長按不放"}</div>
           </div>
           <div class="charge-strip-wrap">
             <div class="charge-strip-lbl">光條指示器</div>
@@ -243,7 +232,6 @@
       const pos = miniState.mazePos || mod.start;
       const trail = miniState.mazeTrail || new Set([`${pos.x},${pos.y}`]);
       const cells = [];
-      // Top coordinate labels
       cells.push(`<div class="mplay-corner">X\\Y</div>`);
       for (let x = 1; x <= 6; x++) cells.push(`<div class="mplay-axis">${x}</div>`);
       for (let y = 1; y <= 6; y++) {
@@ -269,15 +257,15 @@
       }
 
       return `
-        <div class="vis-desc">報出兩個青色定位環 ⭕ 座標給國二找地圖！撞到隱形牆會觸電失誤喔（支援鍵盤方向鍵 / WASD）</div>
+        <div class="vis-desc">把兩個青色圈圈 ⭕ 座標報給指揮官！依指揮走去旗幟 🚩（可用方向鍵 / WASD）</div>
         <div class="maze-stage">
           <div class="maze-play-grid ${miniState.mazeShock ? "shock" : ""}">
             ${cells.join("")}
           </div>
           <div class="maze-dpad-col">
             <div class="maze-coords-box">
-              <div>🐒 目前位置：<b>(${pos.x}, ${pos.y})</b></div>
-              <div>🚩 終點旗幟：<b>(${mod.goal.x}, ${mod.goal.y})</b></div>
+              <div>🐒 猴子：<b>(${pos.x}, ${pos.y})</b></div>
+              <div>🚩 終點：<b>(${mod.goal.x}, ${mod.goal.y})</b></div>
               <div>⭕ 定位環：<b>${mod.maze.markers.map((m) => `(${m.x},${m.y})`).join("、")}</b></div>
             </div>
             <div class="dpad">
@@ -301,7 +289,7 @@
       const curIdx = miniState.freqIdx ?? 0;
       const curFreq = freqs[curIdx] || freqs[0];
       return `
-        <div class="vis-desc">盯著信號燈把「短點 ●」和「長亮 ━」唸給國二查表，找出對應單字後調頻發射！</div>
+        <div class="vis-desc">把信號燈的「短閃 ●」與「長亮 ━」唸給指揮官查單字，調到正確 MHz 發射！</div>
         <div class="morse-stage">
           <div class="morse-lamp-box">
             <div class="morse-bulb" id="morse-bulb"></div>
@@ -331,7 +319,6 @@
   }
 
   function renderBombPanel(container, mission, roomState, options = {}) {
-    const checkedEdge = new Set();
     let activeIdx = Number(roomState.activeModuleIndex || 0);
     let morseTimer = null;
     let holdTimer = null;
@@ -392,10 +379,10 @@
         const glyph = isDash ? "━" : "●";
         currentWordTrail[currentWordTrail.length - 1] += glyph;
 
-        if (!setLamp(true, sym, `第 ${lIdx + 1}/${letters.length} 個字母：${isDash ? "長亮 ━" : "短閃 ●"}`)) return;
+        if (!setLamp(true, sym, `第 ${lIdx + 1}/${letters.length} 字母：${isDash ? "長亮 ━" : "短閃 ●"}`)) return;
 
         morseTimer = setTimeout(() => {
-          if (!setLamp(false, "", `第 ${lIdx + 1}/${letters.length} 個字母（接收中）`)) return;
+          if (!setLamp(false, "", `第 ${lIdx + 1}/${letters.length} 字母`)) return;
           sIdx++;
           if (sIdx >= entry.code.length) {
             sIdx = 0;
@@ -472,7 +459,6 @@
       const mod = modules[activeIdx];
       const solvedSet = new Set(roomState.solvedModules || []);
       const isSolved = mod && solvedSet.has(mod.id);
-      const isUnlocked = roomState.safetyUnlockedFor === (mod && mod.id);
 
       if (mod && mod.id === "laser_maze" && !miniState.mazePos) {
         miniState.mazePos = { x: mod.start.x, y: mod.start.y };
@@ -486,22 +472,7 @@
 
       container.innerHTML = `
         <div class="bomb-casing">
-          <div class="hazard-tape">⚠️ CAUTION // BANANA HAZARD UNIT // SEED: ${escapeHtml(mission.seed)} ⚠️</div>
-          ${renderEdgeworkPanel(mission.edgework, checkedEdge)}
-
-          <div class="mod-selector-bar">
-            ${modules
-              .map(
-                (m, idx) => `
-              <button type="button" class="mod-sel-btn ${idx === activeIdx ? "active" : ""} ${solvedSet.has(m.id) ? "solved" : ""} ${m.kind === "minigame" ? "is-mini" : ""}" data-mod-idx="${idx}">
-                <span class="mod-sel-num">${solvedSet.has(m.id) ? "✅" : m.kind === "minigame" ? `🕹️${idx + 1}` : `🧩${idx + 1}`}</span>
-                <span class="mod-sel-name">${escapeHtml(m.title)}</span>
-              </button>
-            `
-              )
-              .join("")}
-          </div>
-
+          ${options.hideEdgework ? "" : renderEdgeworkStrip(mission.edgework)}
           <div class="module-hardware-box ${isSolved ? "is-solved" : ""}">
             <div class="mod-hw-head">
               <div>
@@ -512,57 +483,8 @@
             </div>
             <div class="mod-hw-body">${bodyHtml}</div>
           </div>
-
-          ${
-            options.showSafetySwitch && mod && mod.kind === "scratch" && !isSolved
-              ? `
-            <div class="safety-switch-box ${isUnlocked ? "unlocked" : "locked"}">
-              <div class="safety-info">
-                <strong>🔐 雙人協作安全插銷（程式模組專用）</strong>
-                <span>旁邊的「國一程式師」拼好 Scratch 積木並核對無誤後，按此解除保險讓他執行！</span>
-              </div>
-              <button type="button" class="safety-btn ${isUnlocked ? "unlocked" : ""}" data-toggle-safety="${mod.id}">
-                ${isUnlocked ? "🔓 保險已解除（可執行）" : "🔒 點此解除安全保險"}
-              </button>
-            </div>
-          `
-              : ""
-          }
         </div>
       `;
-
-      // Bind Edgework checkmarks
-      container.querySelectorAll("[data-edge-mark]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const k = btn.dataset.edgeMark;
-          if (checkedEdge.has(k)) checkedEdge.delete(k);
-          else checkedEdge.add(k);
-          if (BNN.Sound) BNN.Sound.click();
-          paint();
-        });
-      });
-
-      // Bind Module tabs
-      container.querySelectorAll("[data-mod-idx]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const idx = Number(btn.dataset.modIdx);
-          activeIdx = idx;
-          miniState.holding = false;
-          miniState.stripLit = false;
-          if (BNN.Sound) BNN.Sound.click();
-          if (options.onSelectModule) options.onSelectModule(idx);
-          paint();
-        });
-      });
-
-      // Bind Safety Switch
-      const safetyBtn = container.querySelector("[data-toggle-safety]");
-      if (safetyBtn && options.onToggleSafety) {
-        safetyBtn.addEventListener("click", () => {
-          if (BNN.Sound) BNN.Sound.unlock();
-          options.onToggleSafety(safetyBtn.dataset.toggleSafety);
-        });
-      }
 
       // Bind Big Button
       const bigBtn = container.querySelector("#act-big-btn");
@@ -586,7 +508,7 @@
               stripEl.textContent = `${mod.stripColor}光`;
             }
             const hintEl = container.querySelector(".big-btn-hint");
-            if (hintEl) hintEl.textContent = "⚡ 按住中！快報光條顏色給國二，等指定數字出現放開！";
+            if (hintEl) hintEl.textContent = "⚡ 按住中！快報光條顏色給指揮官，等目標數字出現放開！";
           }, 420);
         };
 
@@ -684,14 +606,9 @@
       update(nextRoomState) {
         const prevIdx = activeIdx;
         const prevSolved = (roomState.solvedModules || []).length;
-        const prevUnlock = roomState.safetyUnlockedFor;
         roomState = nextRoomState;
         activeIdx = Number(nextRoomState.activeModuleIndex || 0);
-        if (
-          prevIdx !== activeIdx ||
-          prevSolved !== (nextRoomState.solvedModules || []).length ||
-          prevUnlock !== nextRoomState.safetyUnlockedFor
-        ) {
+        if (prevIdx !== activeIdx || prevSolved !== (nextRoomState.solvedModules || []).length) {
           paint();
         }
       },
@@ -703,5 +620,5 @@
   }
 
   BNN.renderBombPanel = renderBombPanel;
-  BNN.renderEdgeworkPanel = renderEdgeworkPanel;
+  BNN.renderEdgeworkStrip = renderEdgeworkStrip;
 })(window);
