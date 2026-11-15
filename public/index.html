@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🍌💣 BOMBANANA 程式拆彈實驗室｜Scratch × Python × 動作派對</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="global-toast" class="global-toast" aria-live="polite"></div>
+
+  <!-- 玩法與座位合作說明彈窗 -->
+  <div id="help-modal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>📖 拆彈特務指南｜國二 × 兩位坐旁邊的國一</h2>
+        <button type="button" class="modal-close" id="btn-close-help">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="help-section">
+          <h3>🪑 為什麼這樣設計座位與分工？</h3>
+          <ul>
+            <li><strong>🕶️ 國二指揮官（1 人）：</strong>坐在看不到國一螢幕的地方！手上有「Python 拆彈手冊」、「小遊戲手冊（大按鈕/迷宮圖/摩斯表）」和「PY↔Scratch 對照表」，完全看不到炸彈本身！</li>
+            <li><strong>🧩 國一雙人搭檔（2 人坐旁邊！）：</strong>沒有聾人/盲人限制，兩人並肩討論超順暢：
+              <ul>
+                <li><b>並排用 2 台電腦</b>：<b>🔭 偵察員</b>管炸彈外殼、程式安全插銷，並親手玩「大按鈕 / 雷射迷宮 / 摩斯電台」；<b>🧩 程式師</b>主攻「Scratch 積木程式」＋幫搭檔盯閃燈/算秒數！</li>
+                <li><b>共用 1 台電腦</b>：選「🛠️ 國一雙人共用機」，每解完一個關卡自動提醒「偵察手 ⇄ 主控手」交換滑鼠，保證大家都很忙！</li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+
+        <div class="help-section">
+          <h3>🕹️ 遊戲關卡兩大類型</h3>
+          <ul>
+            <li><b>🧩 Scratch × Python 程式模組（6 種）</b>：國二看 Python 規則與 PY 對照表口頭指導，國一拼出 Scratch 積木並通過多組驗證。</li>
+            <li><b>🔥 非程式動作小遊戲（3 種）</b>：
+              <ul>
+                <li><b>🔴 終極香蕉大按鈕</b>：依據電池與指示燈決定「快點一下」或「按住不放等光條亮起＋倒數秒數出現指定數字放開」！</li>
+                <li><b>🧭 隱藏雷射迷宮</b>：國一看定位環座標，國二看完整牆壁地圖即時指揮走位（可用鍵盤方向鍵 / WASD）。</li>
+                <li><b>📻 摩斯香蕉電台</b>：國一看信號燈長短閃爍報給國二，國二查出單字後告訴國一調到幾 MHz 發射！</li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+
+        <div class="help-section">
+          <h3>⚠️ 經典 Scratch vs Python 陷阱提醒</h3>
+          <ol>
+            <li><b>Scratch 沒有 <code>elif</code></b>：要用兩層「如果...那麼...否則」巢狀包起來。</li>
+            <li><b>清單索引差 1</b>：Python <code>wires[0]</code> 在 Scratch 是 <code>第 (1) 項</code>！</li>
+            <li><b><code>while</code> 與 <code>重複直到</code> 條件相反</b>：Python <code>while temp &gt; 30</code> 在 Scratch 要寫 <code>重複直到 temp ≤ 30</code>！</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/prng.js"></script>
+  <script src="js/sound.js"></script>
+  <script src="js/py_reference.js"></script>
+  <script src="js/scratch_blocks.js"></script>
+  <script src="js/puzzles.js"></script>
+  <script src="js/bomb_ui.js"></script>
+  <script src="js/manual_ui.js"></script>
+  <script src="js/sync.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

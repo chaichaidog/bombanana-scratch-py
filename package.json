@@ -1,0 +1,13 @@
+{
+  "name": "bombanana-scratch-py",
+  "version": "1.1.0",
+  "description": "BOMBANANA 程式拆彈實驗室：國一 Scratch × 國二 Python × 動作派對合作拆彈網頁遊戲",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT"
+}
